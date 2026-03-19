@@ -1,0 +1,4 @@
+apiVersion: v2
+name: portfolio-web
+description: Portfolio web service
+version: 0.1.0

@@ -1,0 +1,4 @@
+*.secret.yaml
+*-credentials.yaml
+*-secret.yaml
+.env*

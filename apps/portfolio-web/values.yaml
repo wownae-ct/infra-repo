@@ -1,0 +1,9 @@
+image:
+  repository: <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/portfolio-web
+  tag: "latest"
+  pullPolicy: Always
+
+replicaCount: 2
+
+service:
+  port: 3000
