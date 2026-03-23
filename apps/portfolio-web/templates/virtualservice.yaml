@@ -1,0 +1,31 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: portfolio-web-vs
+  namespace: portfolio-web
+spec:
+  gateways:
+    - istio-system/external-gateway
+    - istio-system/internal-gateway
+  hosts:
+    - {{ .Values.ingress.externalHost }}
+    - {{ .Values.ingress.internalHost }}
+  http:
+    - match:
+        - gateways:
+            - istio-system/external-gateway
+          uri:
+            prefix: {{ .Values.ingress.path }}
+      route:
+        - destination:
+            host: portfolio-web.portfolio-web.svc.cluster.local
+            port:
+              number: 3000
+    - match:
+        - gateways:
+            - istio-system/internal-gateway
+      route:
+        - destination:
+            host: portfolio-web.portfolio-web.svc.cluster.local
+            port:
+              number: 3000

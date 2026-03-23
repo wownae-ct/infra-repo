@@ -1,5 +1,5 @@
 image:
-  repository: <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/portfolio-web
+  repository: 905921696911.dkr.ecr.ap-northeast-2.amazonaws.com/portfolio-web
   tag: "latest"
   pullPolicy: Always
 
@@ -7,3 +7,17 @@ replicaCount: 2
 
 service:
   port: 3000
+
+
+ingress:
+  externalHost: jiun2.ddns.net
+  internalHost: portfolio-web.internal
+  path: /
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"

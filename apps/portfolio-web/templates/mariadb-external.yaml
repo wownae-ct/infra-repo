@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb-external
+  namespace: portfolio-web
+spec:
+  ports:
+    - port: 3306
+      targetPort: 3306
+      protocol: TCP
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: mariadb-external
+  namespace: portfolio-web
+subsets:
+  - addresses:
+      - ip: 20.20.20.233
+    ports:
+      - port: 3306
