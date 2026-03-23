@@ -1,5 +1,5 @@
 image:
-  repository: 905921696911.dkr.ecr.ap-northeast-2.amazonaws.com/portfolio-web
+  repository: AWS_ACCOUNT_ID.dkr.ecr.ap-northeast-2.amazonaws.com
   tag: "latest"
   pullPolicy: Always
 
