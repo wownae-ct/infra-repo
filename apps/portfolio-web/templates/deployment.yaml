@@ -9,6 +9,11 @@ spec:
     matchLabels:
       app: portfolio-web
   template:
+    spec:
+      imagePullSecrets:
+        - name: ecr-credentials
+      containers:
+        - name: portfolio-web
     metadata:
       labels:
         app: portfolio-web
