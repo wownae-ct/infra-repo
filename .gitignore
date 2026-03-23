@@ -2,3 +2,4 @@
 *-credentials.yaml
 *-secret.yaml
 .env*
+!*sealed-secret.yaml
