@@ -7,14 +7,13 @@ metadata:
     - resources-finalizer.argocd.io
 spec:
   project: default
-  source:
-    repoURL: https://charts.jenkins.io
-    chart: jenkins
-    targetRevision: 5.9.9
-    helm:
-      valueFiles:
-        - $values/apps/jenkins/templates/jenkins-values.yaml
   sources:
+    - repoURL: https://charts.jenkins.io
+      chart: jenkins
+      targetRevision: 5.9.9
+      helm:
+        valueFiles:
+          - $values/apps/jenkins/templates/jenkins-values.yaml
     - repoURL: git@github.com:wownae-ct/infra-repo.git
       targetRevision: HEAD
       ref: values
