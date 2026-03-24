@@ -8,9 +8,16 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: git@github.com:wownae-ct/infra-repo.git
-    targetRevision: HEAD
-    path: apps/jenkins
+    repoURL: https://charts.jenkins.io
+    chart: jenkins
+    targetRevision: 5.9.9
+    helm:
+      valueFiles:
+        - $values/apps/jenkins/templates/jenkins-values.yaml
+  sources:
+    - repoURL: git@github.com:wownae-ct/infra-repo.git
+      targetRevision: HEAD
+      ref: values
   destination:
     server: https://kubernetes.default.svc
     namespace: jenkins
