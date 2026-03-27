@@ -1,8 +1,7 @@
 image:
   repository: 905921696911.dkr.ecr.ap-northeast-2.amazonaws.com/portfolio-web
-  tag: "12"
+  tag: "invalid-tag-99999"
   pullPolicy: Always
-
 replicaCount: 2
 
 service:
