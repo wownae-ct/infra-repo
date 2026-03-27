@@ -6,6 +6,12 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.io
 spec:
+  ignoreDifferences:
+  - group: ""
+    kind: Secret
+    name: jenkins
+    jsonPointers:
+    - /data
   project: default
   sources:
     - repoURL: https://charts.jenkins.io
