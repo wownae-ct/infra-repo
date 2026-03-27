@@ -5,19 +5,21 @@ metadata:
   namespace: portfolio-web
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: portfolio-web
   template:
-    spec:
-      imagePullSecrets:
-        - name: ecr-credentials
-      containers:
-        - name: portfolio-web
     metadata:
       labels:
         app: portfolio-web
     spec:
+      imagePullSecrets:
+        - name: ecr-credentials
       containers:
         - name: portfolio-web
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -27,6 +29,23 @@ spec:
           envFrom:
             - secretRef:
                 name: portfolio-web-secret
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             requests:
               memory: {{ .Values.resources.requests.memory }}
