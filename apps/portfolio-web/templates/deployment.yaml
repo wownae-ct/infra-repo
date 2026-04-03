@@ -29,6 +29,11 @@ spec:
           envFrom:
             - secretRef:
                 name: portfolio-web-secret
+          env:
+            - name: MINIO_PUBLIC_URL
+              value: "https://s3.jiun2.ddns.net"
+            - name: MINIO_IMAGE_HOSTNAME
+              value: "s3.jiun2.ddns.net"
           readinessProbe:
             httpGet:
               path: /health
