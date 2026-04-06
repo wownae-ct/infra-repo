@@ -3,10 +3,13 @@ kind: Service
 metadata:
   name: portfolio-web
   namespace: portfolio-web
+  labels:
+    app: portfolio-web
 spec:
   selector:
     app: portfolio-web
   ports:
-    - port: 3000
+    - name: http
+      port: 3000
       targetPort: 3000
       protocol: TCP
