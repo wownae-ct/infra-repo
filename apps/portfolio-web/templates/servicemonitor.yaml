@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: portfolio-web
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - portfolio-web
+  selector:
+    matchLabels:
+      app: portfolio-web
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
