@@ -1,6 +1,6 @@
 image:
   repository: 905921696911.dkr.ecr.ap-northeast-2.amazonaws.com/portfolio-web
-  tag: "25"
+  tag: "24"
   pullPolicy: Always
 
 replicaCount: 2
