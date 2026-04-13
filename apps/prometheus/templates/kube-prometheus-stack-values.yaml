@@ -61,9 +61,25 @@ alertmanager:
       group_wait: 10s
       group_interval: 10s
       repeat_interval: 1h
-      receiver: 'null'
+      receiver: 'sns-email'
+      routes:
+        - match:
+            alertname: Watchdog
+          receiver: 'null'
+        - match_re:
+            alertname: (KubeNodeNotReady|KubePodCrashLooping)
+          receiver: 'sns-email'
+          repeat_interval: 5m
     receivers:
       - name: 'null'
+      - name: 'sns-email'
+        sns_configs:
+          - topic_arn: "arn:aws:sns:ap-northeast-2:905921696911:k8s-cluster-alerts"
+            subject: "[K8s Alert] {{ .GroupLabels.alertname }}"
+            sigv4:
+              region: "ap-northeast-2"
+              access_key: "REPLACE_WITH_ACTUAL_KEY"
+              secret_key: "REPLACE_WITH_ACTUAL_KEY"
 
 kubeEtcd:
   enabled: true
