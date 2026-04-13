@@ -1,4 +1,8 @@
 grafana:
+  serviceMonitor:
+    labels:
+      release: kube-prometheus-stack
+    scrapeTimeout: 10s
   admin:
     existingSecret: grafana-admin-secret
     userKey: admin-user
@@ -22,7 +26,6 @@ grafana:
       isDefault: false
       jsonData:
         httpHeaderName1: X-Scope-OrgID
-
 prometheus:
   prometheusSpec:
     retention: 3d
@@ -36,13 +39,11 @@ prometheus:
               storage: 10Gi
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
-
 prometheus-node-exporter:
   tolerations:
     - key: node-role.kubernetes.io/control-plane
       operator: Exists
       effect: NoSchedule
-
 alertmanager:
   alertmanagerSpec:
     storage:
@@ -66,6 +67,14 @@ alertmanager:
         - match:
             alertname: Watchdog
           receiver: 'null'
+        - match:
+            alertname: TargetDown
+            job: kube-prometheus-stack-grafana
+          receiver: 'null'
+        - match:
+            alertname: TargetDown
+            job: monitoring/istio-proxies-monitor
+          receiver: 'null'
         - match_re:
             alertname: (KubeNodeNotReady|KubePodCrashLooping)
           receiver: 'sns-email'
@@ -76,10 +85,17 @@ alertmanager:
         sns_configs:
           - topic_arn: "arn:aws:sns:ap-northeast-2:905921696911:k8s-cluster-alerts"
             subject: "[K8s Alert] {{ .GroupLabels.alertname }}"
+            message: '[{{ range $i, $a := .Alerts }}{{ if $i }},{{ end }}{"status":"{{ $a.Status }}","labels":{"alertname":"{{ $a.Labels.alertname }}","severity":"{{ $a.Labels.severity }}","namespace":"{{ $a.Labels.namespace }}","job":"{{ $a.Labels.job }}"},"annotations":{"summary":"{{ $a.Annotations.summary }}","description":"{{ $a.Annotations.description }}"}}{{ end }}]'
             sigv4:
               region: "ap-northeast-2"
               access_key: "REPLACE_WITH_ACTUAL_KEY"
               secret_key: "REPLACE_WITH_ACTUAL_KEY"
+kubeProxy:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
 
 kubeEtcd:
   enabled: true
