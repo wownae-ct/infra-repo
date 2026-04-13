@@ -1,0 +1,35 @@
+[masters]
+k8s-master-01 ansible_host=<MASTER_01_IP>
+k8s-master-02 ansible_host=<MASTER_02_IP>
+k8s-master-03 ansible_host=<MASTER_03_IP>
+
+[workers]
+k8s-worker-01 ansible_host=<WORKER_01_IP>
+k8s-worker-02 ansible_host=<WORKER_02_IP>
+k8s-worker-03 ansible_host=<WORKER_03_IP>
+
+[k8s:children]
+masters
+workers
+
+[k8s:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=~/.ssh/k8s_ed25519
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o ProxyJump=<BASTION_HOST> -o ForwardAgent=yes'
+
+[monitoring-vms]
+bastion  ansible_host=<BASTION_IP>  ansible_port=<BASTION_PORT>  ansible_ssh_private_key_file=~/.ssh/id_rsa  ansible_ssh_common_args='-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'
+storage  ansible_host=<STORAGE_IP>  ansible_port=<STORAGE_PORT>  ansible_ssh_private_key_file=~/.ssh/server_key  ansible_ssh_common_args='-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ProxyJump=<BASTION_HOST>'
+
+[monitoring-vms:vars]
+ansible_user=<VM_USER>
+
+[vms]
+bastion   ansible_host=<BASTION_IP>  ansible_port=<BASTION_PORT>  ansible_ssh_private_key_file=~/.ssh/id_rsa  ansible_ssh_common_args='-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'
+service   ansible_host=<SERVICE_IP>  ansible_port=<SERVICE_PORT>  ansible_ssh_private_key_file=~/.ssh/server_key  ansible_ssh_common_args='-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ProxyJump=<BASTION_HOST>'
+storage   ansible_host=<STORAGE_IP>  ansible_port=<STORAGE_PORT>  ansible_ssh_private_key_file=~/.ssh/server_key  ansible_ssh_common_args='-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ProxyJump=<BASTION_HOST>'
+db        ansible_host=<DB_IP>       ansible_port=<DB_PORT>       ansible_ssh_private_key_file=~/.ssh/server_key  ansible_ssh_common_args='-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ProxyJump=<BASTION_HOST>'
+observer  ansible_host=<OBSERVER_IP> ansible_port=<OBSERVER_PORT> ansible_ssh_private_key_file=~/.ssh/server_key  ansible_ssh_common_args='-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ProxyJump=<BASTION_HOST>'
+
+[vms:vars]
+ansible_user=<VM_USER>

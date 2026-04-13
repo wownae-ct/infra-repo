@@ -1,0 +1,25 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+positions:
+  filename: /tmp/positions-nginx.yaml
+clients:
+  - url: http://{{ loki_lb_ip }}:3100/loki/api/v1/push
+    tenant_id: {{ loki_tenant_id }}
+scrape_configs:
+  - job_name: nginx-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: nginx
+          host: bastion
+          __path__: /var/log/nginx/*.log
+  - job_name: system-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: system
+          host: bastion
+          __path__: /var/log/{syslog,auth.log}
