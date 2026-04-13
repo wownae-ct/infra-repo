@@ -97,6 +97,24 @@ kubeScheduler:
 kubeControllerManager:
   enabled: false
 
+defaultRules:
+  disabled:
+    KubeNodeNotReady: true
+
+additionalPrometheusRulesMap:
+  custom-alerts:
+    groups:
+      - name: custom-node-alerts
+        rules:
+          - alert: KubeNodeNotReady
+            expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Node {{ $labels.node }} is not ready"
+              description: "{{ $labels.node }} has been unready for more than 1 minute"
+
 kubeEtcd:
   enabled: true
   endpoints:
