@@ -1,0 +1,79 @@
+{
+  "dashboard": {
+    "title": "portfolio-web metrics",
+    "uid": "portfolio-web",
+    "tags": ["portfolio-web"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "panels": [
+      {
+        "id": 1,
+        "title": "HTTP 요청 수 (rate 1m)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{namespace=\"portfolio-web\"}[1m])) by (pod)",
+            "legendFormat": "{{pod}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "5xx 에러율 (rate 1m)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "color": "green", "value": 0 },
+                { "color": "red", "value": 0.1 }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_5xx_total{namespace=\"portfolio-web\"}[1m])) by (pod)",
+            "legendFormat": "{{pod}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "응답 시간 p99 (seconds)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace=\"portfolio-web\"}[1m])) by (le, pod))",
+            "legendFormat": "p99 {{pod}}",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace=\"portfolio-web\"}[1m])) by (le, pod))",
+            "legendFormat": "p95 {{pod}}",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{namespace=\"portfolio-web\"}[1m])) by (le, pod))",
+            "legendFormat": "p50 {{pod}}",
+            "refId": "C"
+          }
+        ]
+      }
+    ],
+    "time": { "from": "now-1h", "to": "now" },
+    "refresh": "30s"
+  },
+  "overwrite": true,
+  "folderUid": ""
+}

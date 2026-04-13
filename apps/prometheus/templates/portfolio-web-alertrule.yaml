@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: portfolio-web-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: portfolio-web
+      rules:
+        - alert: PortfolioWeb5xxHigh
+          expr: |
+            sum(rate(istio_requests_total{destination_service=~"portfolio-web.*", response_code=~"5.."}[1m]))
+            /
+            sum(rate(istio_requests_total{destination_service=~"portfolio-web.*"}[1m]))
+            > 0.1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "portfolio-web 5xx 에러율 높음"
+            description: "5xx 응답률이 1분간 0.1 초과: {{ $value }}"
