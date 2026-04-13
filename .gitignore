@@ -3,3 +3,4 @@
 *-secret.yaml
 .env*
 !*sealed-secret.yaml
+ansible/inventory/hosts.ini

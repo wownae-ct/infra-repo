@@ -1,0 +1,40 @@
+server:
+  http_listen_port: 9082
+  grpc_listen_port: 0
+positions:
+  filename: /tmp/positions-storage.yaml
+clients:
+  - url: http://{{ loki_lb_ip }}:3100/loki/api/v1/push
+    tenant_id: {{ loki_tenant_id }}
+scrape_configs:
+  - job_name: minio_journal
+    journal:
+      labels:
+        job: minio
+        host: storage-server
+      matches: _SYSTEMD_UNIT=minio.service
+    relabel_configs:
+      - source_labels: ['__journal__systemd_unit']
+        target_label: unit
+  - job_name: storage_protocols
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: storage-services
+          host: storage-server
+          __path__: /var/log/{nfs-access.log,smb-access.log,samba/log.*}
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: ".*/(?P<protocol>nfs|smb)-access.log"
+      - labels:
+          protocol:
+  - job_name: system-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: system
+          host: storage-server
+          __path__: /var/log/{syslog,auth.log}
