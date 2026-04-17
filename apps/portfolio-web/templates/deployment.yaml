@@ -36,7 +36,7 @@ spec:
               value: "s3.jiun2.ddns.net"
           readinessProbe:
             httpGet:
-              path: /definitely-broken
+              path: /health
               port: 3000
             initialDelaySeconds: 10
             periodSeconds: 5
