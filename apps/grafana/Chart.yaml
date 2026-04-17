@@ -1,0 +1,4 @@
+apiVersion: v2
+name: grafana-extras
+version: 0.1.0
+description: Grafana SealedSecrets and extras
