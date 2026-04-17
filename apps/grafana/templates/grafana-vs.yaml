@@ -13,6 +13,19 @@ spec:
   http:
   - match:
     - uri:
+        prefix: /grafana/api/live
+      gateways:
+      - istio-system/external-gateway
+    rewrite:
+      uri: /api/live
+    route:
+    - destination:
+        host: kube-prometheus-stack-grafana.monitoring.svc.cluster.local
+        port:
+          number: 80
+    timeout: 300s
+  - match:
+    - uri:
         prefix: /grafana
       gateways:
       - istio-system/external-gateway
@@ -23,6 +36,18 @@ spec:
         host: kube-prometheus-stack-grafana.monitoring.svc.cluster.local
         port:
           number: 80
+  - match:
+    - headers:
+        upgrade:
+          exact: websocket
+      gateways:
+      - istio-system/internal-gateway
+    route:
+    - destination:
+        host: kube-prometheus-stack-grafana.monitoring.svc.cluster.local
+        port:
+          number: 80
+    timeout: 300s
   - match:
     - gateways:
       - istio-system/internal-gateway

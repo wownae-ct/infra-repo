@@ -12,6 +12,10 @@ grafana:
       domain: jiun2.ddns.net
       root_url: "%(protocol)s://%(domain)s/grafana/"
       serve_from_sub_path: true
+    security:
+      csrf_trusted_origins: jiun2.ddns.net
+      csrf_additional_headers: X-Forwarded-Host
+      cookie_samesite: lax
   persistence:
     enabled: true
     size: 2Gi
@@ -26,6 +30,14 @@ grafana:
       isDefault: false
       jsonData:
         httpHeaderName1: X-Scope-OrgID
+      secureJsonData:
+        httpHeaderValue1: $__file{/etc/grafana/secrets/loki-datasource/httpHeaderValue1}
+  extraSecretMounts:
+    - name: loki-datasource-secret
+      secretName: grafana-datasource-loki-secret
+      defaultMode: 0440
+      mountPath: /etc/grafana/secrets/loki-datasource
+      readOnly: true
 prometheus:
   prometheusSpec:
     retention: 3d
@@ -88,8 +100,8 @@ alertmanager:
             message: '[{{ range $i, $a := .Alerts }}{{ if $i }},{{ end }}{"status":"{{ $a.Status }}","labels":{"alertname":"{{ $a.Labels.alertname }}","severity":"{{ $a.Labels.severity }}","namespace":"{{ $a.Labels.namespace }}","job":"{{ $a.Labels.job }}"},"annotations":{"summary":"{{ $a.Annotations.summary }}","description":"{{ $a.Annotations.description }}"}}{{ end }}]'
             sigv4:
               region: "ap-northeast-2"
-              access_key: "REPLACE_WITH_ACTUAL_KEY"
-              secret_key: "REPLACE_WITH_ACTUAL_KEY"
+              access_key: "<REPLACE ACCESSKEY>"
+              secret_key: "<REPLACE SECRETKEY>"
 kubeProxy:
   enabled: false
 kubeScheduler:
