@@ -20,4 +20,4 @@ spec:
             severity: critical
           annotations:
             summary: "portfolio-web 5xx 에러율 높음"
-            description: "5xx 응답률이 1분간 0.1 초과: {{ $value }}"
+            description: "5xx 응답률이 1분간 0.1 초과: {{ "{{ $value }}" }}"
