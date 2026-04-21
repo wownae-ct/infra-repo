@@ -6,6 +6,7 @@ metadata:
 spec:
   hosts:
   - "loki.internal"
+  - "loki.jiun2-internal.net"
   gateways:
   - istio-system/internal-gateway
   http:

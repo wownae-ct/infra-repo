@@ -1,0 +1,17 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: alertmanager-vs
+  namespace: monitoring
+spec:
+  gateways:
+  - istio-system/internal-gateway
+  hosts:
+  - "alertmanager.internal"
+  - "alertmanager.jiun2-internal.net"
+  http:
+  - route:
+    - destination:
+        host: kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local
+        port:
+          number: 9093
