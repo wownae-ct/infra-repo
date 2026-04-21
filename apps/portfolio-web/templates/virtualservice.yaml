@@ -15,16 +15,6 @@ spec:
         - gateways:
             - istio-system/external-gateway
           uri:
-            prefix: /jenkins
-      route:
-        - destination:
-           host: jenkins.jenkins.svc.cluster.local
-           port:
-              number: 8080
-    - match:
-        - gateways:
-            - istio-system/external-gateway
-          uri:
             prefix: {{ .Values.ingress.path }}
       route:
         - destination:
