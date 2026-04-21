@@ -5,7 +5,6 @@ metadata:
   namespace: jenkins
 spec:
   gateways:
-  - istio-system/external-gateway
   - istio-system/internal-gateway
   hosts:
   - "jenkins.internal"
