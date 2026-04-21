@@ -1,0 +1,4 @@
+apiVersion: v2
+name: longhorn-extras
+version: 0.1.0
+description: Longhorn VirtualService and extras
