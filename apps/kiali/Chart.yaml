@@ -1,0 +1,4 @@
+apiVersion: v2
+name: kiali-extras
+version: 0.1.0
+description: Kiali VirtualService

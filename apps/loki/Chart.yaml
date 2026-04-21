@@ -1,0 +1,4 @@
+apiVersion: v2
+name: loki-extras
+version: 0.1.0
+description: Loki VirtualService and extras
