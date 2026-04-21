@@ -5,27 +5,12 @@ metadata:
   namespace: longhorn-system
 spec:
   gateways:
-  - istio-system/external-gateway
   - istio-system/internal-gateway
   hosts:
-  - "jiun2.ddns.net"
   - "longhorn.internal"
   - "longhorn.jiun2-internal.net"
   http:
-  - match:
-    - gateways:
-      - istio-system/external-gateway
-      uri:
-        prefix: /longhorn
-    route:
-    - destination:
-        host: longhorn-frontend.longhorn-system.svc.cluster.local
-        port:
-          number: 80
-  - match:
-    - gateways:
-      - istio-system/internal-gateway
-    route:
+  - route:
     - destination:
         host: longhorn-frontend.longhorn-system.svc.cluster.local
         port:
