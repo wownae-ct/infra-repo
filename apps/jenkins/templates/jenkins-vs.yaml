@@ -10,22 +10,7 @@ spec:
   - "jenkins.internal"
   - "jenkins.jiun2-internal.net"
   http:
-  - match:
-    - gateways:
-      - istio-system/external-gateway
-      uri:
-        prefix: /jenkins
-    rewrite:
-      uri: /
-    route:
-    - destination:
-        host: jenkins.jenkins.svc.cluster.local
-        port:
-          number: 8080
-  - match:
-    - gateways:
-      - istio-system/internal-gateway
-    route:
+  - route:
     - destination:
         host: jenkins.jenkins.svc.cluster.local
         port:

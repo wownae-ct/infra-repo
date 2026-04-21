@@ -10,20 +10,7 @@ spec:
   - "argocd.internal"
   - "argocd.jiun2-internal.net"
   http:
-  - match:
-    - gateways:
-      - istio-system/external-gateway
-      uri:
-        prefix: /argocd
-    route:
-    - destination:
-        host: argocd-server.argocd.svc.cluster.local
-        port:
-          number: 80
-  - match:
-    - gateways:
-      - istio-system/internal-gateway
-    route:
+  - route:
     - destination:
         host: argocd-server.argocd.svc.cluster.local
         port:
