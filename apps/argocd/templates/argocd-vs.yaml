@@ -8,7 +8,6 @@ spec:
   - istio-system/external-gateway
   - istio-system/internal-gateway
   hosts:
-  - "jiun2.ddns.net"
   - "argocd.internal"
   - "argocd.jiun2-internal.net"
   http:

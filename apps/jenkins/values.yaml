@@ -1,20 +1,19 @@
 jenkins:
   controller:
-    jenkinsOpts: "--prefix=/jenkins"
     probes:
       startupProbe:
         httpGet:
-          path: /jenkins/login
+          path: /login
           port: 8080
         failureThreshold: 12
         periodSeconds: 10
       livenessProbe:
         httpGet:
-          path: /jenkins/login
+          path: /login
           port: 8080
       readinessProbe:
         httpGet:
-          path: /jenkins/login
+          path: /login
           port: 8080
     serviceType: ClusterIP
     resources:
