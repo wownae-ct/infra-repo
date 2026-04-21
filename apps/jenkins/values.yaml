@@ -1,0 +1,47 @@
+jenkins:
+  controller:
+    jenkinsOpts: "--prefix=/jenkins"
+    probes:
+      startupProbe:
+        httpGet:
+          path: /jenkins/login
+          port: 8080
+        failureThreshold: 12
+        periodSeconds: 10
+      livenessProbe:
+        httpGet:
+          path: /jenkins/login
+          port: 8080
+      readinessProbe:
+        httpGet:
+          path: /jenkins/login
+          port: 8080
+    serviceType: ClusterIP
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    javaOpts: "-Xms512m -Xmx1g"
+    installPlugins:
+      - kubernetes:latest
+      - workflow-aggregator:latest
+      - git:latest
+      - github:latest
+      - credentials-binding:latest
+      - amazon-ecr:latest
+      - aws-credentials:latest
+      - pipeline-utility-steps:latest
+      - ssh-agent:latest
+    serviceAccount:
+      create: true
+      name: jenkins
+  persistence:
+    enabled: true
+    storageClass: longhorn
+    size: 10Gi
+  rbac:
+    create: true
+    readSecrets: true
