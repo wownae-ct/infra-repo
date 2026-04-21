@@ -1,0 +1,32 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: argocd-vs
+  namespace: argocd
+spec:
+  gateways:
+  - istio-system/external-gateway
+  - istio-system/internal-gateway
+  hosts:
+  - "jiun2.ddns.net"
+  - "argocd.internal"
+  - "argocd.jiun2-internal.net"
+  http:
+  - match:
+    - gateways:
+      - istio-system/external-gateway
+      uri:
+        prefix: /argocd
+    route:
+    - destination:
+        host: argocd-server.argocd.svc.cluster.local
+        port:
+          number: 80
+  - match:
+    - gateways:
+      - istio-system/internal-gateway
+    route:
+    - destination:
+        host: argocd-server.argocd.svc.cluster.local
+        port:
+          number: 80
