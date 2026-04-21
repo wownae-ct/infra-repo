@@ -1,0 +1,8 @@
+apiVersion: v2
+name: jenkins-umbrella
+description: Jenkins umbrella chart
+version: 1.0.0
+dependencies:
+  - name: jenkins
+    version: 5.9.9
+    repository: https://charts.jenkins.io

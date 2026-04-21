@@ -4,3 +4,4 @@
 .env*
 !*sealed-secret.yaml
 ansible/inventory/hosts.ini
+apps/jenkins/charts/
