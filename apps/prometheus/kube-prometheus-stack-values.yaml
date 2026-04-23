@@ -9,11 +9,11 @@ grafana:
     passwordKey: admin-password
   grafana.ini:
     server:
-      domain: jiun2.ddns.net
-      root_url: "%(protocol)s://%(domain)s/grafana/"
-      serve_from_sub_path: true
+      domain: grafana.jiun2-internal.net
+      root_url: "%(protocol)s://%(domain)s/"
+      serve_from_sub_path: false
     security:
-      csrf_trusted_origins: jiun2.ddns.net
+      csrf_trusted_origins: grafana.jiun2-internal.net
       csrf_additional_headers: X-Forwarded-Host
       cookie_samesite: lax
   persistence:
