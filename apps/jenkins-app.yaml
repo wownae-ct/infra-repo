@@ -14,7 +14,7 @@ spec:
     - /data
   project: default
   source:
-    repoURL: git@github.com:wownae-ct/infra-repo.git
+    repoURL: https://github.com/wownae-ct/infra-repo.git
     targetRevision: HEAD
     path: apps/jenkins
   destination:
