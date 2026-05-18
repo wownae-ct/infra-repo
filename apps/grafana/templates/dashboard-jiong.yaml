@@ -1,4 +1,10 @@
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-jiong
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
 data:
   jiong.json: |
     {
@@ -234,7 +240,7 @@ data:
               "direction": "backward",
               "editorMode": "code",
               "expr": "sum(count_over_time(\r\n  {job=\"nginx\"} \r\n  | pattern `<_> - - [<_>] \"<method> <uri> <_>\" <status> <size> <_>`\r\n  | status != \"-\" \r\n  [1m]\r\n)) by (status)",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}status{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{status}}`}}",
               "queryType": "range",
               "refId": "A"
             }
@@ -422,7 +428,7 @@ data:
           },
           "id": 14,
           "panels": [],
-          "title": "\uc2a4\ud1a0\ub9ac\uc9c0",
+          "title": "스토리지",
           "type": "row"
         },
         {
@@ -541,7 +547,7 @@ data:
           },
           "id": 4,
           "panels": [],
-          "title": "\uc11c\ube44\uc2a4",
+          "title": "서비스",
           "type": "row"
         },
         {
@@ -783,7 +789,7 @@ data:
             "type": "loki",
             "uid": "P8E80F9AEF21F6940"
           },
-          "description": "Jenkins \ube4c\ub4dc \uc2e4\ud328 \ud69f\uc218",
+          "description": "Jenkins 빌드 실패 횟수",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -897,9 +903,3 @@ data:
       "version": 5,
       "weekStart": ""
     }
-kind: ConfigMap
-metadata:
-  labels:
-    grafana_dashboard: "1"
-  name: grafana-dashboard-jiong
-  namespace: monitoring

@@ -1,4 +1,10 @@
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-failure-scenarios
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
 data:
   failure-scenarios.json: |
     {
@@ -34,7 +40,7 @@ data:
           },
           "id": 4,
           "panels": [],
-          "title": "Pod \uc0c1\ud0dc",
+          "title": "Pod 상태",
           "type": "row"
         },
         {
@@ -125,7 +131,7 @@ data:
             {
               "editorMode": "code",
               "expr": "kube_pod_status_ready{namespace=\"portfolio-web\", pod=~\"portfolio-web.*\", condition=\"true\"}",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}pod{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{pod}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -221,7 +227,7 @@ data:
             {
               "editorMode": "code",
               "expr": "count by (phase) (kube_pod_status_phase{namespace=\"portfolio-web\", pod=~\"portfolio-web.*\"} == 1)",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}phase{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{phase}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -318,7 +324,7 @@ data:
             {
               "editorMode": "code",
               "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=\"portfolio-web\", horizontalpodautoscaler=\"portfolio-web\"}",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}horizontalpodautoscaler{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{horizontalpodautoscaler}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -336,7 +342,7 @@ data:
           },
           "id": 3,
           "panels": [],
-          "title": "\ub9ac\uc18c\uc2a4 \ubcc0\ud654",
+          "title": "리소스 변화",
           "type": "row"
         },
         {
@@ -426,7 +432,7 @@ data:
             {
               "editorMode": "code",
               "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"portfolio-web\", container=\"portfolio-web\"}[5m]))",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}pod{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{pod}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -522,7 +528,7 @@ data:
             {
               "editorMode": "code",
               "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"portfolio-web\", container=\"portfolio-web\"})",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}pod{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{pod}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -540,7 +546,7 @@ data:
           },
           "id": 2,
           "panels": [],
-          "title": "\ubcf4\uc870",
+          "title": "보조",
           "type": "row"
         },
         {
@@ -631,7 +637,7 @@ data:
             {
               "editorMode": "code",
               "expr": "kube_pod_container_status_restarts_total{namespace=\"portfolio-web\", container=\"portfolio-web\"}",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}pod{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{pod}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -657,9 +663,3 @@ data:
       "version": 12,
       "weekStart": ""
     }
-kind: ConfigMap
-metadata:
-  labels:
-    grafana_dashboard: "1"
-  name: grafana-dashboard-failure-scenarios
-  namespace: monitoring
