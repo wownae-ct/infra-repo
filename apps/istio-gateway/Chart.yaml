@@ -1,0 +1,5 @@
+apiVersion: v2
+name: istio-gateway
+description: Istio Gateways for external/internal traffic
+version: 1.0.0
+type: application
