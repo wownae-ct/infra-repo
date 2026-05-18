@@ -38,6 +38,15 @@ grafana:
       defaultMode: 0440
       mountPath: /etc/grafana/secrets/loki-datasource
       readOnly: true
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
 prometheus:
   prometheusSpec:
     retention: 3d
