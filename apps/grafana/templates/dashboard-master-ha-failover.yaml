@@ -1,4 +1,10 @@
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-master-ha-failover
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
 data:
   master-ha-failover.json: |
     {
@@ -34,7 +40,7 @@ data:
           },
           "id": 4,
           "panels": [],
-          "title": "\ub178\ub4dc \uc0c1\ud0dc",
+          "title": "노드 상태",
           "type": "row"
         },
         {
@@ -145,7 +151,7 @@ data:
               },
               "editorMode": "code",
               "expr": "kube_node_status_condition{condition=\"Ready\", status=\"true\", node=~\"k8s-master.*\"}",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}node{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{node}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -232,7 +238,7 @@ data:
           },
           "id": 3,
           "panels": [],
-          "title": "etcd \ud074\ub7ec\uc2a4\ud130",
+          "title": "etcd 클러스터",
           "type": "row"
         },
         {
@@ -339,7 +345,7 @@ data:
             {
               "editorMode": "code",
               "expr": "etcd_server_has_leader",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}instance{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{instance}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -436,7 +442,7 @@ data:
             {
               "editorMode": "code",
               "expr": "increase(etcd_server_leader_changes_seen_total[1m])",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}instance{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{instance}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -546,7 +552,7 @@ data:
             {
               "editorMode": "code",
               "expr": "sum(rate(apiserver_request_total[1m])) by (code)",
-              "legendFormat": "{{ "{{" }} "{{ "{{" }}" {{ "}}" }}code{{ "{{" }} "{{ "}}" }}" {{ "}}" }}",
+              "legendFormat": "{{`{{code}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -572,9 +578,3 @@ data:
       "version": 9,
       "weekStart": ""
     }
-kind: ConfigMap
-metadata:
-  labels:
-    grafana_dashboard: "1"
-  name: grafana-dashboard-master-ha-failover
-  namespace: monitoring
