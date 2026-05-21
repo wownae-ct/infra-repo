@@ -16,6 +16,8 @@ jenkins:
           path: /login
           port: 8080
     serviceType: ClusterIP
+    systemMessage: "Jenkins managed by JCasC (17cha)"
+    numExecutors: 0
     resources:
       requests:
         cpu: "500m"
@@ -34,9 +36,87 @@ jenkins:
       - aws-credentials:latest
       - pipeline-utility-steps:latest
       - ssh-agent:latest
+      - job-dsl:latest
+      - configuration-as-code:latest
     serviceAccount:
       create: true
       name: jenkins
+    admin:
+      existingSecret: jenkins-credentials
+      userKey: jenkins-admin-user
+      passwordKey: jenkins-admin-password
+    additionalExistingSecrets:
+      - name: jenkins-credentials
+        keyName: AWS_ACCESS_KEY_ID
+      - name: jenkins-credentials
+        keyName: AWS_SECRET_ACCESS_KEY
+      - name: jenkins-credentials
+        keyName: ECR_REGISTRY
+      - name: jenkins-credentials
+        keyName: GITHUB_INFRA_SSH_KEY
+      - name: jenkins-credentials
+        keyName: GITHUB_APP_SSH_KEY
+    JCasC:
+      configScripts:
+        credentials-config: |
+          credentials:
+            system:
+              domainCredentials:
+                - credentials:
+                    - aws:
+                        scope: GLOBAL
+                        id: "aws-ecr-credentials"
+                        accessKey: "${jenkins-credentials-AWS_ACCESS_KEY_ID}"
+                        secretKey: "${jenkins-credentials-AWS_SECRET_ACCESS_KEY}"
+                        description: "AWS ECR"
+                    - basicSSHUserPrivateKey:
+                        scope: GLOBAL
+                        id: "github-infra-ssh"
+                        username: "git"
+                        description: "github infra repo deploy key"
+                        privateKeySource:
+                          directEntry:
+                            privateKey: "${jenkins-credentials-GITHUB_INFRA_SSH_KEY}"
+                    - basicSSHUserPrivateKey:
+                        scope: GLOBAL
+                        id: "github-app-ssh"
+                        username: "git"
+                        description: "github jiong-minihome repo deploy key"
+                        privateKeySource:
+                          directEntry:
+                            privateKey: "${jenkins-credentials-GITHUB_APP_SSH_KEY}"
+                    - string:
+                        scope: GLOBAL
+                        id: "ecr-registry"
+                        secret: "${jenkins-credentials-ECR_REGISTRY}"
+                        description: "ECR registry URL"
+        job-config: |
+          jobs:
+            - script: >
+                pipelineJob('portfolio-web') {
+                  description('Portfolio Web CI/CD Pipeline (GitOps)')
+                  definition {
+                    cpsScm {
+                      scm {
+                        git {
+                          remote {
+                            url('git@github.com:wownae-ct/jiong-minihome.git')
+                            credentials('github-app-ssh')
+                          }
+                          branches('*/master')
+                        }
+                      }
+                      scriptPath('Jenkinsfile')
+                    }
+                  }
+                  triggers {
+                    githubPush()
+                  }
+                }
+        security-config: |
+          security:
+            gitHostKeyVerificationConfiguration:
+              sshHostKeyVerificationStrategy: "noHostKeyVerificationStrategy"
   persistence:
     enabled: true
     storageClass: longhorn
