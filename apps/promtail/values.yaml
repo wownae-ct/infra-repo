@@ -1,0 +1,171 @@
+promtail:
+  config:
+    clients:
+      - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+        tenant_id: default
+
+    snippets:
+      scrapeConfigs: |
+        - job_name: kubernetes-pods
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_controller_name]
+              regex: ([0-9a-z-.]+?)(-[0-9a-f]{8,10})?
+              target_label: __tmp_controller_name
+            - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name, __tmp_controller_name]
+              regex: (.+);.*
+              target_label: app
+            - source_labels: [__tmp_controller_name]
+              target_label: app
+              action: keepequal
+            - source_labels: [__meta_kubernetes_pod_node_name]
+              target_label: node
+            - source_labels: [__meta_kubernetes_namespace]
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod
+            - source_labels: [__meta_kubernetes_pod_container_name]
+              target_label: container
+            - replacement: /var/log/pods/*$1/*.log
+              separator: /
+              source_labels: [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
+              target_label: __path__
+          pipeline_stages:
+            - cri: {}
+            - labeldrop:
+                - filename
+
+        - job_name: kubelet
+          journal:
+            labels:
+              job: kubelet
+            matches: _SYSTEMD_UNIT=kubelet.service
+          relabel_configs:
+            - source_labels: ['__journal__hostname']
+              target_label: node
+            - source_labels: ['__journal_priority_keyword']
+              target_label: level
+
+        - job_name: containerd
+          journal:
+            labels:
+              job: containerd
+            matches: _SYSTEMD_UNIT=containerd.service
+          relabel_configs:
+            - source_labels: ['__journal__hostname']
+              target_label: node
+            - source_labels: ['__journal_priority_keyword']
+              target_label: level
+
+        - job_name: etcd
+          static_configs:
+            - targets: [localhost]
+              labels:
+                job: etcd
+                __path__: /var/log/pods/*etcd*/*/*.log
+          pipeline_stages:
+            - cri: {}
+
+        - job_name: kube-apiserver
+          static_configs:
+            - targets: [localhost]
+              labels:
+                job: kube-apiserver
+                __path__: /var/log/pods/*kube-apiserver*/*/*.log
+          pipeline_stages:
+            - cri: {}
+
+        - job_name: kube-scheduler
+          static_configs:
+            - targets: [localhost]
+              labels:
+                job: kube-scheduler
+                __path__: /var/log/pods/*kube-scheduler*/*/*.log
+          pipeline_stages:
+            - cri: {}
+
+        - job_name: kube-controller-manager
+          static_configs:
+            - targets: [localhost]
+              labels:
+                job: kube-controller-manager
+                __path__: /var/log/pods/*kube-controller-manager*/*/*.log
+          pipeline_stages:
+            - cri: {}
+
+        - job_name: kube-proxy
+          static_configs:
+            - targets: [localhost]
+              labels:
+                job: kube-proxy
+                __path__: /var/log/pods/*kube-proxy*/*/*.log
+          pipeline_stages:
+            - cri: {}
+
+        - job_name: node-syslog
+          journal:
+            labels:
+              job: node-system
+            matches: _TRANSPORT=syslog
+          relabel_configs:
+            - source_labels: ['__journal__hostname']
+              target_label: node
+            - source_labels: ['__journal__systemd_unit']
+              target_label: unit
+
+        - job_name: node-ssh
+          journal:
+            labels:
+              job: ssh
+            matches: _SYSTEMD_UNIT=ssh.service
+          relabel_configs:
+            - source_labels: ['__journal__hostname']
+              target_label: node
+          pipeline_stages:
+            - regex:
+                expression: '(?P<action>Failed password|Invalid user) .* from (?P<src_ip>\d+\.\d+\.\d+\.\d+)'
+            - labels:
+                action:
+                src_ip:
+
+  daemonset:
+    enabled: true
+
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
+
+  extraVolumes:
+    - name: journal
+      hostPath:
+        path: /var/log/journal
+    - name: machine-id
+      hostPath:
+        path: /etc/machine-id
+
+  extraVolumeMounts:
+    - name: journal
+      mountPath: /var/log/journal
+      readOnly: true
+    - name: machine-id
+      mountPath: /etc/machine-id
+      readOnly: true
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  serviceMonitor:
+    enabled: false
+
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
