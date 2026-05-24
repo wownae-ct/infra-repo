@@ -1,4 +1,4 @@
-# Role: portfolio-web 네임스페이스에서 Deployment 조회 권한
+# Role: portfolio-web 네임스페이스에서 Deployment 조회 + Secret 관리 권한
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -17,7 +17,9 @@ rules:
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["get", "list"]
-
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "create", "update", "patch"]
 ---
 # RoleBinding: jenkins ServiceAccount에 Role 바인딩
 apiVersion: rbac.authorization.k8s.io/v1
@@ -28,7 +30,7 @@ metadata:
 subjects:
 - kind: ServiceAccount
   name: jenkins
-  namespace: jenkins # jenkins는 jenkins 네임스페이스에 있음
+  namespace: jenkins
 roleRef:
   kind: Role
   name: jenkins-deployment-reader
