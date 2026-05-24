@@ -1,0 +1,24 @@
+kiali-server:
+  auth:
+    strategy: anonymous
+
+  deployment:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  external_services:
+    prometheus:
+      url: http://kube-prometheus-stack-prometheus.monitoring:9090
+    grafana:
+      enabled: true
+      url: http://kube-prometheus-stack-grafana.monitoring
+    tracing:
+      enabled: false
+
+  server:
+    web_root: /
