@@ -1,4 +1,9 @@
 apiVersion: v2
-name: kiali-extras
+name: kiali
 version: 0.1.0
-description: Kiali VirtualService
+description: Kiali Service Mesh Console
+
+dependencies:
+  - name: kiali-server
+    version: "2.8.0"
+    repository: https://kiali.org/helm-charts
