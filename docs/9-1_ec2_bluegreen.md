@@ -5,11 +5,11 @@
 
 
 EC2 인스턴스 (Blue — 현재 운영 중)
-항목값instance-idi-08031365811d6cbb7instance-typet3.microAZap-northeast-2csubnet-idsubnet-0572ffcb598b1ff22security-group-idsg-0deaffe563d3a27b1key-pairjiong-key
+항목값instance-idi-<instance-id>instance-typet3.microAZap-northeast-2csubnet-idsubnet-<id>security-group-idsg-<id>key-pair<key-pair>
 EIP
-항목값public-ip54.116.101.135allocation-ideipalloc-005ff5e7f9bfdfae6association-ideipassoc-044de1a9feae05fa4연결 인스턴스i-08031365811d6cbb7
+항목값public-ip<public-ip>allocation-ideipalloc-<id>association-ideipassoc-<id>연결 인스턴스i-<instance-id>
 IAM
-항목값userjiong-iampolicyAdministratorAccess (Full)
+항목값user<iam-user>policyAdministratorAccess (Full)
 Terraform State (module.aws)
 EC2 관련
 
@@ -43,7 +43,7 @@ EIP: aws_eip.nat에서 instance = aws_instance.nat.id로 직접 참조
 terraform plan -target=module.aws → No changes 확인 완료
 
 WireGuard (Bastion VM)
-항목값Endpoint54.116.101.135:51820 (EIP 직접 참조)비고EIP를 Green으로 옮기면 WireGuard 자동 복구 — 추가 작업 불필요
+항목값Endpoint<public-ip>:51820 (EIP 직접 참조)비고EIP를 Green으로 옮기면 WireGuard 자동 복구 — 추가 작업 불필요
 
 Phase 0 완료 체크리스트
 
