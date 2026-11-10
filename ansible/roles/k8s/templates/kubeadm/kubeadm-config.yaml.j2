@@ -1,0 +1,65 @@
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: {{ k8s_node_ip }}
+  bindPort: 6443
+nodeRegistration:
+  name: {{ inventory_hostname }}
+  criSocket: unix:///run/containerd/containerd.sock
+  kubeletExtraArgs:
+    - name: node-ip
+      value: {{ k8s_node_ip }}
+
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: {{ k8s_version_short }}
+clusterName: {{ k8s_cluster_name }}
+controlPlaneEndpoint: "{{ k8s_control_plane_endpoint }}"
+
+networking:
+  podSubnet: {{ k8s_pod_subnet }}
+  serviceSubnet: {{ k8s_service_subnet }}
+  dnsDomain: cluster.local
+
+apiServer:
+  extraArgs:
+    - name: authorization-mode
+      value: Node,RBAC
+  certSANs:
+{% for h in groups['k8s_masters'] %}
+    - {{ hostvars[h].k8s_node_ip }}
+    - {{ h }}
+{% endfor %}
+    - {{ k8s_vip }}
+    - {{ k8s_cluster_name }}
+    - 127.0.0.1
+    - localhost
+
+controllerManager:
+  extraArgs:
+    - name: bind-address
+      value: 0.0.0.0
+
+scheduler:
+  extraArgs:
+    - name: bind-address
+      value: 0.0.0.0
+
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+    extraArgs:
+      - name: listen-metrics-urls
+        value: "http://0.0.0.0:2381"
+
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+clusterDNS:
+  - {{ k8s_cluster_dns }}
+clusterDomain: cluster.local
+# kube-proxy 는 Cilium 이 대체 — KubeProxyConfiguration 자체를 생략.
+# init 시에도 --skip-phases=addon/kube-proxy 로 호출.

@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# argocd chart values — defaults/main.yml 의 argocd_chart_values dict 직렬화
+# admin bcrypt 가 포함되므로 파일 권한 0600 으로 관리됨.
+
+{{ argocd_chart_values | to_nice_yaml(indent=2, width=200) }}

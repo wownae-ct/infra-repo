@@ -1,0 +1,101 @@
+---
+# ============================================================
+# roles/k8s/tasks/ha.yml — sub-task 4
+# ============================================================
+# 대상: k8s_masters (3대)
+# 호출: include_role: { name: k8s } vars: { k8s_sub_task: ha }
+#
+# keepalived (VIP failover) + haproxy (k8s API LB) 설치 + 설정.
+# bootstrap (kubeadm init) 전에 반드시 완료되어야 함:
+#   - VIP {{ k8s_vip }} 가 살아있어야 controlPlaneEndpoint 가 동작
+#   - HAProxy 8443 listen 도 같이 떠 있어야 함
+#
+# 검증 정책:
+#   - 여기에는 fail-fast 만 둔다 (서비스 active, frontend listen).
+#   - 보고용 검증 (VIP ownership, 전체 reachability, failover 동작)은
+#     05g-k8s-verify.yml 에서 클러스터 전체 점검 시 통합 수행.
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. 패키지 설치
+# ------------------------------------------------------------
+- name: "ha | Install keepalived + haproxy (apt default)"
+  ansible.builtin.apt:
+    name:
+      - keepalived
+      - haproxy
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# ------------------------------------------------------------
+# 2. keepalived 설정
+# ------------------------------------------------------------
+- name: "ha | Deploy keepalived.conf"
+  ansible.builtin.template:
+    src: keepalived/keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: '0600'   # auth_pass 포함이라 0600
+    backup: true
+  notify: "Restart keepalived"
+
+- name: "ha | Enable + start keepalived"
+  ansible.builtin.systemd:
+    name: keepalived
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# ------------------------------------------------------------
+# 3. haproxy 설정
+# ------------------------------------------------------------
+- name: "ha | Deploy haproxy.cfg"
+  ansible.builtin.template:
+    src: haproxy/haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: '0640'   # stats password 포함
+    backup: true
+    validate: "haproxy -c -f %s"
+  notify: "Restart haproxy"
+
+- name: "ha | Enable + start haproxy"
+  ansible.builtin.systemd:
+    name: haproxy
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# 검증 task 들이 새 설정 상태를 읽어야 함
+- name: "ha | Flush handlers now (apply restarts before verify)"
+  ansible.builtin.meta: flush_handlers
+
+# ------------------------------------------------------------
+# 4. 즉시 fail-fast 검증 (다음 sub-task 의존성)
+# ------------------------------------------------------------
+- name: "ha | Verify | keepalived is active"
+  ansible.builtin.command: systemctl is-active keepalived
+  register: _v_keepalived
+  changed_when: false
+  failed_when: _v_keepalived.stdout != "active"
+  when: not ansible_check_mode
+
+- name: "ha | Verify | haproxy is active"
+  ansible.builtin.command: systemctl is-active haproxy
+  register: _v_haproxy
+  changed_when: false
+  failed_when: _v_haproxy.stdout != "active"
+  when: not ansible_check_mode
+
+- name: "ha | Verify | HAProxy frontend listening on {{ k8s_haproxy_frontend_port }}"
+  ansible.builtin.wait_for:
+    host: "{{ k8s_node_ip }}"
+    port: "{{ k8s_haproxy_frontend_port }}"
+    timeout: 10
+  when: not ansible_check_mode
+
+# 보고용 검증 (VIP ownership, end-to-end reachability) 은
+# 05g-k8s-verify.yml 에서 클러스터 전체 점검 시 통합 수행.

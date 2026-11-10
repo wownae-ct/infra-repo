@@ -1,0 +1,39 @@
+---
+# ============================================================
+# Phase 5e — worker join
+# ============================================================
+# 사양표 sub-task #7
+#
+# Play 1: master-01 에서 token 재발급 (5d 와 동일 패턴)
+# Play 2: worker 3대가 hostvars 로 받아서 kubeadm join (worker mode)
+#
+# 결과:
+#   - 6 노드 클러스터 (NotReady — Cilium 전)
+# ============================================================
+
+- name: "Phase 5e-pre | Refresh join commands on master-01"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "5e-pre → bootstrap (token 재발급)"
+      ansible.builtin.include_role:
+        name: k8s
+      vars:
+        k8s_sub_task: bootstrap
+
+- name: "Phase 5e | Join workers"
+  hosts: k8s_workers
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  serial: 1   # 안전성 우선 — 한 번에 한 대씩
+
+  tasks:
+    - name: "5e → join_worker"
+      ansible.builtin.include_role:
+        name: k8s
+      vars:
+        k8s_sub_task: join_worker

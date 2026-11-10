@@ -1,0 +1,60 @@
+---
+# ============================================================
+# common role - defaults
+# ============================================================
+# 모든 VM(bastion, storage, db, k8s-master*3, k8s-worker*3)에 적용되는 기본 시스템 설정 변수
+# ============================================================
+
+# ---------- Time/Locale ----------
+common_timezone: Asia/Seoul
+
+# ---------- DNS 클라이언트 ----------
+# bastion 의 BIND9 를 1순위, 외부 DNS 를 fallback 으로.
+# bastion 자체에는 다른 값(아래 _for_bastion) 적용.
+common_dns_servers:
+  - "{{ hostvars['bastion'].internal_ip | default('10.98.1.230') }}"
+  - 1.1.1.1
+  - 8.8.8.8
+
+common_dns_servers_for_bastion:
+  - 1.1.1.1
+  - 8.8.8.8
+
+common_dns_search:
+  - "lab.internal"
+
+# ---------- NTP 클라이언트 (2차분에서 사용) ----------
+common_ntp_servers:
+  - "{{ hostvars['bastion'].internal_ip | default('10.98.1.230') }}"
+  - time.bora.net
+  - 0.ntp.kornet.net
+
+common_ntp_servers_for_bastion:
+  - time.bora.net
+  - 0.ntp.kornet.net
+
+# ---------- 기본 패키지 ----------
+common_packages_basic:
+  - curl
+  - wget
+  - vim
+  - net-tools
+  - tcpdump
+  - jq
+  - htop
+  - rsync
+
+common_packages_debian:
+  - dnsutils
+  - software-properties-common
+
+common_packages_redhat:
+  - bind-utils
+  - epel-release
+
+# ---------- /etc/hosts ----------
+common_manage_etc_hosts: true
+
+common_extra_hosts: []
+# 예시:
+#   - { ip: "10.98.2.4", names: ["example.com", "ex"] }

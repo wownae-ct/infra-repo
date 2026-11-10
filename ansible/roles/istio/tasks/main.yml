@@ -1,0 +1,33 @@
+---
+# ============================================================
+# roles/istio/tasks/main.yml — sub-task router
+# ============================================================
+# Sub-task:
+#   base     : istio/base chart install (CRDs + 기본 RBAC)
+#   istiod   : istio/istiod chart install (control plane)
+#   ingress  : istio/gateway chart install (ingressgateway + LoadBalancer)
+#   verify   : istiod / ingressgateway Ready + LB IP=10.98.1.250 확인
+#
+# 순서 강제:
+#   base → istiod → ingress → verify
+#   (CRD 가 먼저 등록되어야 istiod / gateway chart 가 깔림)
+# ============================================================
+
+- name: "istio | Assert istio_sub_task is provided and valid"
+  ansible.builtin.assert:
+    that:
+      - istio_sub_task is defined
+      - istio_sub_task in _istio_sub_tasks_allowed
+    fail_msg: >-
+      istio_sub_task must be one of: {{ _istio_sub_tasks_allowed | join(', ') }}
+      (got: {{ istio_sub_task | default('UNDEFINED') }})
+    quiet: true
+  vars:
+    _istio_sub_tasks_allowed:
+      - base
+      - istiod
+      - ingress
+      - verify
+
+- name: "istio | Include sub-task → {{ istio_sub_task }}"
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/{{ istio_sub_task }}.yml"

@@ -1,0 +1,21 @@
+# /etc/knockd.conf - managed by Ansible (bastion role)
+# Port knocking 으로 SSH (8282) 보호.
+
+[options]
+    UseSyslog
+    LogFile = /var/log/knockd.log
+    Interface = {{ bastion_knockd_interface }}
+
+[openSSH]
+    sequence    = {{ bastion_knockd_open_sequence }}
+    seq_timeout = {{ bastion_knockd_seq_timeout }}
+    tcpflags    = syn
+    cmd_timeout = {{ bastion_knockd_open_timeout }}
+    start_command = /sbin/iptables -I INPUT -s %IP% -p tcp --dport {{ bastion_knockd_port }} -j ACCEPT
+    stop_command  = /sbin/iptables -D INPUT -s %IP% -p tcp --dport {{ bastion_knockd_port }} -j ACCEPT
+
+[closeSSH]
+    sequence    = {{ bastion_knockd_close_sequence }}
+    seq_timeout = {{ bastion_knockd_seq_timeout }}
+    tcpflags    = syn
+    command     = /sbin/iptables -D INPUT -s %IP% -p tcp --dport {{ bastion_knockd_port }} -j ACCEPT

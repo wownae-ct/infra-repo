@@ -1,0 +1,168 @@
+---
+# ============================================================
+# argocd/tasks/verify.yml — sub-task 2
+# ============================================================
+# 대상: k8s-master-01
+# 컴포넌트 Ready + admin secret 확인.
+#
+# 검증:
+#   1. Deployments (server / repo-server / redis / dex / applicationset)
+#   2. StatefulSet (application-controller)
+#   3. argocd-secret 의 admin.password 가 set 되어있나
+#   4. CRD 등록 상태
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Deployments Available
+# ------------------------------------------------------------
+- name: "verify | Wait for Deployments Available"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ argocd_kubeconfig }}
+      -n {{ argocd_namespace }}
+      wait --for=condition=Available deployment/{{ item.name }}
+      --timeout={{ argocd_wait_timeout }}
+  loop: "{{ argocd_components }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  when: item.kind == 'deployment'
+  changed_when: false
+
+# ------------------------------------------------------------
+# 2. StatefulSet rollout
+# ------------------------------------------------------------
+- name: "verify | Wait for StatefulSet rollout"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ argocd_kubeconfig }} \
+      -n {{ argocd_namespace }} \
+      rollout status statefulset/{{ item.name }} \
+      --timeout={{ argocd_wait_timeout }}
+  args:
+    executable: /bin/bash
+  loop: "{{ argocd_components }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  when: item.kind == 'statefulset'
+  changed_when: false
+
+# ------------------------------------------------------------
+# 3. argocd-secret 에 admin.password 가 set 되어있는지 (값 노출 X)
+# ------------------------------------------------------------
+- name: "verify | Check argocd-secret has admin.password"
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl --kubeconfig={{ argocd_kubeconfig }} \
+      -n {{ argocd_namespace }} \
+      get secret argocd-secret \
+      -o jsonpath='{.data.admin\.password}' \
+    | base64 -d | wc -c
+  args:
+    executable: /bin/bash
+  register: _v_admin
+  changed_when: false
+  failed_when: _v_admin.stdout | int < 50    # bcrypt 해시는 60자
+  no_log: false   # 길이만 출력되므로 안전
+
+- name: "verify | Report admin.password length"
+  ansible.builtin.debug:
+    msg: "argocd-secret admin.password length = {{ _v_admin.stdout }} (expect 60)"
+
+# ------------------------------------------------------------
+# 4. Pods 상태 (정보 출력용)
+# ------------------------------------------------------------
+- name: "verify | List ArgoCD pods"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ argocd_kubeconfig }} \
+      -n {{ argocd_namespace }} \
+      get pods -o wide
+  args:
+    executable: /bin/bash
+  register: _v_pods
+  changed_when: false
+
+- name: "verify | Show ArgoCD pods"
+  ansible.builtin.debug:
+    msg: "{{ _v_pods.stdout_lines }}"
+
+# ------------------------------------------------------------
+# 5. CRDs 등록 확인
+# ------------------------------------------------------------
+- name: "verify | List ArgoCD CRDs"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ argocd_kubeconfig }} \
+      get crd -o name | grep argoproj.io
+  args:
+    executable: /bin/bash
+  register: _v_crds
+  changed_when: false
+  failed_when: _v_crds.stdout_lines | length < 3
+
+- name: "verify | Show ArgoCD CRDs"
+  ansible.builtin.debug:
+    msg: "{{ _v_crds.stdout_lines }}"
+
+# ------------------------------------------------------------
+# 6. Service type (ClusterIP 인지 — Istio 경유 전제)
+# ------------------------------------------------------------
+- name: "verify | argocd-server service type"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ argocd_kubeconfig }} \
+      -n {{ argocd_namespace }} \
+      get svc argocd-server -o jsonpath='{.spec.type}'
+  args:
+    executable: /bin/bash
+  register: _v_svc
+  changed_when: false
+  failed_when: _v_svc.stdout != 'ClusterIP'
+
+# ------------------------------------------------------------
+# 7. Repo credentials Secret 등록 확인
+# ------------------------------------------------------------
+- name: "verify | repo-creds Secret exists"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ argocd_kubeconfig }} \
+      -n {{ argocd_namespace }} \
+      get secret {{ argocd_repo_creds_secret_name }} -o name
+  args:
+    executable: /bin/bash
+  register: _v_creds
+  changed_when: false
+  failed_when: argocd_repo_creds_secret_name not in _v_creds.stdout
+
+- name: "verify | repo-creds Secret has argocd label"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ argocd_kubeconfig }} \
+      -n {{ argocd_namespace }} \
+      get secret {{ argocd_repo_creds_secret_name }} \
+      -o jsonpath='{.metadata.labels.argocd\.argoproj\.io/secret-type}'
+  args:
+    executable: /bin/bash
+  register: _v_creds_label
+  changed_when: false
+  failed_when: _v_creds_label.stdout != 'repo-creds'
+
+- name: "verify | repo-creds URL prefix"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ argocd_kubeconfig }} \
+      -n {{ argocd_namespace }} \
+      get secret {{ argocd_repo_creds_secret_name }} \
+      -o jsonpath='{.data.url}' | base64 -d
+  args:
+    executable: /bin/bash
+  register: _v_creds_url
+  changed_when: false
+  failed_when: _v_creds_url.stdout != argocd_repo_creds_url_prefix
+
+# ------------------------------------------------------------
+# 8. 최종 리포트
+# ------------------------------------------------------------
+- name: "verify | Final report"
+  ansible.builtin.debug:
+    msg:
+      - "Components            : server / repo-server / redis / dex / applicationset / controller OK"
+      - "Service type          : ClusterIP (Istio gateway 경유 예정)"
+      - "admin.password length : {{ _v_admin.stdout }} (bcrypt 60자 OK)"
+      - "CRDs                  : {{ _v_crds.stdout_lines | length }}개 등록"
+      - "repo-creds Secret     : {{ argocd_repo_creds_secret_name }} OK (URL prefix: {{ _v_creds_url.stdout }})"
+      - "UI 접속 (Istio 설치 전): kubectl -n argocd port-forward svc/argocd-server 8080:80"
+      - "All ArgoCD components healthy."

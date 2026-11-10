@@ -1,0 +1,145 @@
+---
+# ============================================================
+# ecr/tasks/verify.yml — sub-task 2
+# ============================================================
+# 대상: k8s-master-01
+# 검증:
+#   1. CronJob 존재 + schedule
+#   2. ServiceAccount / Role / RoleBinding 존재
+#   3. aws-credentials Secret 존재 (3 keys)
+#   4. ecr-credentials Secret 존재 (dockerconfigjson)
+#   5. portfolio-web Deployment 의 imagePullSecrets 참조 확인
+#   6. portfolio-web Pods Ready (이미 떠있다면)
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. CronJob
+# ------------------------------------------------------------
+- name: "verify | CronJob status"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ecr_kubeconfig }}
+      -n {{ ecr_namespace }}
+      get cronjob {{ ecr_cronjob_name }}
+      -o jsonpath={.spec.schedule}
+  register: _v_cronjob
+  changed_when: false
+  failed_when: _v_cronjob.stdout != ecr_schedule
+
+- name: "verify | Report CronJob"
+  ansible.builtin.debug:
+    msg: "CronJob {{ ecr_cronjob_name }} schedule = {{ _v_cronjob.stdout }}"
+
+# ------------------------------------------------------------
+# 2. RBAC
+# ------------------------------------------------------------
+- name: "verify | ServiceAccount exists"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ecr_kubeconfig }}
+      -n {{ ecr_namespace }}
+      get serviceaccount {{ ecr_sa_name }} -o name
+  changed_when: false
+
+- name: "verify | Role exists"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ecr_kubeconfig }}
+      -n {{ ecr_namespace }}
+      get role {{ ecr_role_name }} -o name
+  changed_when: false
+
+- name: "verify | RoleBinding exists"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ecr_kubeconfig }}
+      -n {{ ecr_namespace }}
+      get rolebinding {{ ecr_binding_name }} -o name
+  changed_when: false
+
+# ------------------------------------------------------------
+# 3. aws-credentials Secret (3 keys: AK, SK, region)
+# ------------------------------------------------------------
+- name: "verify | aws-credentials Secret has 3 keys"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ ecr_kubeconfig }} \
+      -n {{ ecr_namespace }} \
+      get secret {{ ecr_aws_creds_secret }} \
+      -o jsonpath='{.data}' | python3 -c "import sys, json; d=json.load(sys.stdin); print(len(d))"
+  args:
+    executable: /bin/bash
+  register: _v_aws_keys
+  changed_when: false
+  failed_when: _v_aws_keys.stdout | trim != "3"
+
+# ------------------------------------------------------------
+# 4. ecr-credentials Secret (dockerconfigjson)
+# ------------------------------------------------------------
+- name: "verify | ecr-credentials Secret exists with correct type"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ecr_kubeconfig }}
+      -n {{ ecr_namespace }}
+      get secret {{ ecr_secret_name }}
+      -o jsonpath={.type}
+  register: _v_ecr_secret
+  changed_when: false
+  failed_when: _v_ecr_secret.stdout != "kubernetes.io/dockerconfigjson"
+
+# ------------------------------------------------------------
+# 5. portfolio-web Deployment 의 imagePullSecrets 참조
+# ------------------------------------------------------------
+- name: "verify | portfolio-web Deployment references ecr-credentials"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ ecr_kubeconfig }} \
+      -n {{ ecr_namespace }} \
+      get deployment {{ item }} \
+      -o jsonpath='{.spec.template.spec.imagePullSecrets[*].name}' 2>/dev/null \
+    | grep -q "{{ ecr_secret_name }}" && echo "OK" || echo "MISSING"
+  args:
+    executable: /bin/bash
+  loop: "{{ ecr_target_deployments }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _v_deploy_ref
+  changed_when: false
+  failed_when: false
+
+- name: "verify | Show imagePullSecrets reference results"
+  ansible.builtin.debug:
+    msg: "{{ item.item }} → {{ item.stdout }}"
+  loop: "{{ _v_deploy_ref.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# ------------------------------------------------------------
+# 6. 최근 Job 상태
+# ------------------------------------------------------------
+- name: "verify | Recent ecr-credentials-refresh Jobs"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ ecr_kubeconfig }} \
+      -n {{ ecr_namespace }} \
+      get jobs -l job-name --sort-by=.metadata.creationTimestamp 2>/dev/null \
+    | grep -i ecr | tail -3 || echo "(no jobs yet)"
+  args:
+    executable: /bin/bash
+  register: _v_jobs
+  changed_when: false
+
+- name: "verify | Show recent Jobs"
+  ansible.builtin.debug:
+    msg: "{{ _v_jobs.stdout_lines }}"
+
+# ------------------------------------------------------------
+# 7. 최종 리포트
+# ------------------------------------------------------------
+- name: "verify | Final report"
+  ansible.builtin.debug:
+    msg:
+      - "CronJob             : {{ ecr_cronjob_name }} (schedule: {{ ecr_schedule }})"
+      - "ServiceAccount      : {{ ecr_sa_name }}"
+      - "Role / Binding      : {{ ecr_role_name }} / {{ ecr_binding_name }}"
+      - "aws-credentials     : 3 keys OK"
+      - "ecr-credentials     : dockerconfigjson OK"
+      - "Target Deployments  : {{ ecr_target_deployments | join(', ') }}"
+      - "다음 갱신           : 매 6시간 (0,6,12,18시 UTC)"

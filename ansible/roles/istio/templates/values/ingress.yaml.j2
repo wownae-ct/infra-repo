@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+# istio/gateway chart values — defaults/main.yml 의 istio_ingress_chart_values dict 직렬화
+
+{{ istio_ingress_chart_values | to_nice_yaml(indent=2, width=200) }}

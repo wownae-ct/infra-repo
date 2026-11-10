@@ -1,0 +1,74 @@
+---
+# ============================================================
+# metallb role - defaults
+# ============================================================
+# MetalLB 부트스트랩 (helm install).
+# Cilium 이 kubeProxyReplacement=true 라 일부 환경에서 충돌 가능하나,
+# L2 mode 자체는 ARP 응답만 보내는 거라 함께 동작 OK.
+#   (Cilium 의 LB IPAM/L2 announcement 는 OFF 상태이므로 충돌 없음)
+#
+# 백업 환경은 manifest 직접 apply 였으나, 신환경은 helm 으로 통일
+# (다른 컴포넌트와 일관성 + ArgoCD takeover 용이).
+# ============================================================
+
+# ============================================================
+# Helm release / chart
+# ============================================================
+metallb_helm_repo_name: "metallb"
+metallb_helm_repo_url: "https://metallb.github.io/metallb"
+
+metallb_helm_release_name: "metallb"
+metallb_helm_chart: "metallb/metallb"
+metallb_helm_chart_version: "0.15.3"          # latest stable (app v0.15.3)
+metallb_namespace: "metallb-system"
+
+# kubeconfig
+metallb_kubeconfig: "/etc/kubernetes/admin.conf"
+
+# ============================================================
+# Chart values
+# ============================================================
+# 기본값 거의 그대로. resources 만 명시 (운영 안정성).
+# controller : Deployment (1 replica) - LB IP 할당 로직
+# speaker    : DaemonSet (모든 노드) - ARP/NDP advertisement
+
+metallb_chart_values:
+  controller:
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "200m"
+        memory: "128Mi"
+  speaker:
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "200m"
+        memory: "128Mi"
+  # metrics (kube-prometheus-stack 이 추후 수집)
+  prometheus:
+    serviceMonitor:
+      enabled: false   # ServiceMonitor CRD 아직 없음
+
+# ============================================================
+# IP pool / advertisement (백업 값 그대로)
+# ============================================================
+metallb_pool_name: "service-pool"
+metallb_pool_addresses:
+  - "10.98.1.250-10.98.1.253"
+metallb_pool_auto_assign: true
+metallb_pool_avoid_buggy_ips: false
+
+metallb_l2adv_name: "default"
+# advertise 대상 — 비우면 모든 pool advertise. 명시하려면 [metallb_pool_name].
+
+# ============================================================
+# Verify
+# ============================================================
+metallb_controller_label: "app.kubernetes.io/component=controller"
+metallb_speaker_label: "app.kubernetes.io/component=speaker"
+metallb_wait_timeout: "180s"

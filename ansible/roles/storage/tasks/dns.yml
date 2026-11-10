@@ -1,0 +1,76 @@
+---
+# ============================================================
+# storage role - dns sub-task
+# ============================================================
+# common role 은 부트스트랩 안전상 DHCP/기본 DNS 유지.
+# 03-storage.yml 은 02-bastion.yml 뒤에 실행되므로
+# bastion BIND9 (10.98.1.230) 이 이미 떠있는 상태.
+# NetworkManager 로 DNS 를 bastion BIND9 1순위로 전환.
+# ============================================================
+
+- name: "dns | Get active NetworkManager connection name"
+  ansible.builtin.shell: |
+    nmcli -t -f NAME,DEVICE connection show --active | awk -F: '$2=="eth0" {print $1; exit}'
+  args:
+    executable: /bin/bash
+  become: true
+  register: _nm_conn
+  changed_when: false
+  tags: [storage, dns]
+
+- name: "dns | Configure DNS via NetworkManager (bastion BIND9 1순위)"
+  ansible.builtin.shell: |
+    CURRENT_DNS=$(nmcli -t -f ipv4.dns connection show "{{ _nm_conn.stdout }}" | cut -d: -f2)
+    DESIRED_DNS="10.98.1.230,1.1.1.1,8.8.8.8"
+    CURRENT_SEARCH=$(nmcli -t -f ipv4.dns-search connection show "{{ _nm_conn.stdout }}" | cut -d: -f2)
+    DESIRED_SEARCH="lab.internal"
+    CURRENT_PRIO=$(nmcli -t -f ipv4.dns-priority connection show "{{ _nm_conn.stdout }}" | cut -d: -f2)
+    if [ "$CURRENT_DNS" != "$DESIRED_DNS" ] || [ "$CURRENT_SEARCH" != "$DESIRED_SEARCH" ] || [ "$CURRENT_PRIO" != "-100" ]; then
+      nmcli connection modify "{{ _nm_conn.stdout }}" ipv4.dns "10.98.1.230 1.1.1.1 8.8.8.8"
+      nmcli connection modify "{{ _nm_conn.stdout }}" ipv4.dns-search "lab.internal"
+      nmcli connection modify "{{ _nm_conn.stdout }}" ipv4.ignore-auto-dns yes
+      nmcli connection modify "{{ _nm_conn.stdout }}" ipv4.dns-priority -100
+      nmcli connection up "{{ _nm_conn.stdout }}"
+      echo CHANGED
+    else
+      echo OK
+    fi
+  args:
+    executable: /bin/bash
+  become: true
+  register: _nm_dns
+  changed_when: "'CHANGED' in _nm_dns.stdout"
+  when: _nm_conn.stdout | length > 0
+  tags: [storage, dns]
+
+- name: "dns | Force resolv.conf update (NM 이 갱신 안 하는 경우 대비)"
+  ansible.builtin.copy:
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # managed by Ansible (storage role, post-BIND9)
+      search lab.internal
+      nameserver 10.98.1.230
+      nameserver 1.1.1.1
+      nameserver 8.8.8.8
+  become: true
+  tags: [storage, dns]
+
+# ---------- 검증 ----------
+
+- name: "dns | Verify - bastion BIND9 응답 (lab.internal)"
+  ansible.builtin.command: dig @10.98.1.230 jenkins.lab.internal +short
+  become: true
+  register: _dns_check
+  changed_when: false
+  failed_when: _dns_check.stdout | trim != "10.98.1.230"
+  when: not ansible_check_mode
+  tags: [storage, dns, verify]
+
+- name: "dns | Report DNS"
+  ansible.builtin.debug:
+    msg: "bastion BIND9 resolve OK (jenkins.lab.internal → {{ _dns_check.stdout | trim }})"
+  when: not ansible_check_mode
+  tags: [storage, dns, verify]

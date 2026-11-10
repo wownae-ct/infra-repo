@@ -1,0 +1,146 @@
+---
+# ============================================================
+# longhorn/tasks/prerequisites.yml — sub-task 1
+# ============================================================
+# 대상: k8s_workers
+# - apt packages (iscsi, nfs, cryptsetup, dmsetup)
+# - multipathd 비활성화 (Longhorn 충돌)
+# - kernel modules (dm_crypt, iscsi_tcp)
+# - 30G 디스크 ext4 포맷 (host_vars 의 k8s_longhorn_disk)
+# - {{ longhorn_disk_mount_path }} 영구 마운트 (UUID + fstab)
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Required packages
+# ------------------------------------------------------------
+- name: "prerequisites | Install required packages"
+  ansible.builtin.apt:
+    name: "{{ longhorn_required_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: "prerequisites | Enable + start iscsid service"
+  ansible.builtin.systemd:
+    name: iscsid
+    enabled: true
+    state: started
+
+# ------------------------------------------------------------
+# 2. Multipathd 비활성화 (Longhorn 권장)
+# ------------------------------------------------------------
+- name: "prerequisites | Check if multipathd is installed"
+  ansible.builtin.command:
+    cmd: systemctl list-unit-files multipathd.service
+  register: _multipathd_check
+  changed_when: false
+  failed_when: false
+
+- name: "prerequisites | Disable + stop multipathd"
+  ansible.builtin.systemd:
+    name: multipathd
+    enabled: false
+    state: stopped
+  when:
+    - _multipathd_check.rc == 0
+    - "'multipathd.service' in _multipathd_check.stdout"
+  failed_when: false   # 서비스가 enable 만 되어있고 active 아닐 수 있음
+
+# ------------------------------------------------------------
+# 3. Kernel modules (영구 로드)
+# ------------------------------------------------------------
+- name: "prerequisites | Deploy /etc/modules-load.d/longhorn.conf"
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/longhorn.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Ansible managed — Longhorn required kernel modules
+      {% for m in longhorn_required_kernel_modules %}
+      {{ m }}
+      {% endfor %}
+
+- name: "prerequisites | Load kernel modules now"
+  ansible.builtin.shell: |
+    set -o pipefail
+    lsmod | awk '{print $1}'
+  args:
+    executable: /bin/bash
+  register: _lsmod
+  changed_when: false
+
+- name: "prerequisites | modprobe modules not yet loaded"
+  ansible.builtin.command:
+    cmd: "modprobe {{ item }}"
+  loop: "{{ longhorn_required_kernel_modules }}"
+  when: item not in _lsmod.stdout_lines
+  changed_when: true
+
+# ------------------------------------------------------------
+# 4. 디스크 포맷 (host_vars 의 k8s_longhorn_disk)
+# ------------------------------------------------------------
+- name: "prerequisites | Assert k8s_longhorn_disk is defined for this worker"
+  ansible.builtin.assert:
+    that:
+      - k8s_longhorn_disk is defined
+      - k8s_longhorn_disk | length > 0
+    fail_msg: >-
+      host_vars 에 k8s_longhorn_disk 가 정의되지 않았습니다 ({{ inventory_hostname }}).
+    quiet: true
+
+- name: "prerequisites | Check existing filesystem on {{ k8s_longhorn_disk }}"
+  ansible.builtin.command:
+    cmd: "blkid -o value -s TYPE {{ k8s_longhorn_disk }}"
+  register: _blkid
+  changed_when: false
+  failed_when: false   # 파일시스템 없으면 rc!=0 — 정상 케이스
+
+- name: "prerequisites | Format {{ k8s_longhorn_disk }} as {{ longhorn_disk_fstype }} (only if no FS)"
+  ansible.builtin.command:
+    cmd: "mkfs.{{ longhorn_disk_fstype }} -F {{ k8s_longhorn_disk }}"
+  when: _blkid.stdout | trim | length == 0
+  changed_when: true
+
+- name: "prerequisites | Re-detect filesystem (post-format)"
+  ansible.builtin.command:
+    cmd: "blkid -o value -s UUID {{ k8s_longhorn_disk }}"
+  register: _disk_uuid
+  changed_when: false
+  failed_when: _disk_uuid.stdout | trim | length == 0
+
+# ------------------------------------------------------------
+# 5. Mount + fstab
+# ------------------------------------------------------------
+- name: "prerequisites | Ensure mount point exists"
+  ansible.builtin.file:
+    path: "{{ longhorn_disk_mount_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: "prerequisites | Mount {{ k8s_longhorn_disk }} → {{ longhorn_disk_mount_path }} (fstab + mount)"
+  ansible.posix.mount:
+    path: "{{ longhorn_disk_mount_path }}"
+    src: "UUID={{ _disk_uuid.stdout | trim }}"
+    fstype: "{{ longhorn_disk_fstype }}"
+    opts: "{{ longhorn_disk_mount_opts }}"
+    state: mounted
+
+# ------------------------------------------------------------
+# 6. Verify
+# ------------------------------------------------------------
+- name: "prerequisites | Verify | mount is active"
+  ansible.builtin.shell: |
+    set -o pipefail
+    findmnt -n -o SOURCE,FSTYPE,TARGET {{ longhorn_disk_mount_path }}
+  args:
+    executable: /bin/bash
+  register: _v_mount
+  changed_when: false
+  failed_when: _v_mount.rc != 0
+
+- name: "prerequisites | Report mount status"
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} → {{ _v_mount.stdout }}"

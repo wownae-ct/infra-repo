@@ -1,0 +1,17 @@
+# /etc/ssh/sshd_config.d/50-db.conf - managed by Ansible (db role)
+# db 의 SSH 보안 정책 drop-in.
+
+{% if db_ssh_keep_port_22 | bool %}
+Port 22
+{% endif %}
+Port {{ db_ssh_port }}
+
+PermitRootLogin {{ db_ssh_permit_root_login }}
+PasswordAuthentication {{ db_ssh_password_authentication }}
+PubkeyAuthentication {{ db_ssh_pubkey_authentication }}
+
+UsePAM {{ db_ssh_use_pam }}
+
+X11Forwarding {{ db_ssh_x11_forwarding }}
+PrintMotd {{ db_ssh_print_motd }}
+AllowTcpForwarding {{ db_ssh_allow_tcp_forwarding }}

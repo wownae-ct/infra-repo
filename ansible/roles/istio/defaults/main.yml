@@ -1,0 +1,141 @@
+---
+# ============================================================
+# istio role - defaults
+# ============================================================
+# Istio service mesh 부트스트랩 (3 개 helm chart).
+#
+# 백업 환경: istioctl 로 설치
+# 신환경  : helm 으로 통일 (자동화 + 다른 컴포넌트와 일관성)
+#
+# Chart 3 개:
+#   1. istio/base        — CRDs + 기본 ServiceAccount/RBAC
+#   2. istio/istiod      — control plane (Pilot)
+#   3. istio/gateway     — ingressgateway (LoadBalancer)
+#
+# Gateway CR (external + internal) 은 Ansible 영역 아님:
+#   - infra-repo/apps/istio-gateway/ 가 ArgoCD App-of-Apps 로 sync (6g)
+#   - Ansible 은 본체 chart 3 개만 깔고 끝
+#
+# 핵심 검증:
+#   - kubectl -n istio-system get svc istio-ingressgateway
+#   - External IP = 10.98.1.250 (MetalLB pool 첫 IP, 백업 환경과 동일)
+# ============================================================
+
+# ============================================================
+# Helm repo
+# ============================================================
+istio_helm_repo_name: "istio"
+istio_helm_repo_url: "https://istio-release.storage.googleapis.com/charts"
+
+# 공통 chart version (3 개 chart 모두 동일)
+istio_chart_version: "1.23.4"
+
+# kubeconfig
+istio_kubeconfig: "/etc/kubernetes/admin.conf"
+
+# Namespace
+istio_namespace: "istio-system"
+
+# ============================================================
+# Chart 1: istio/base
+# ============================================================
+istio_base_release_name: "istio-base"
+istio_base_chart: "istio/base"
+
+# base chart 는 거의 default. CRDs + 기본 RBAC 만.
+# defaultRevision="default" → istiod 가 'default' revision 으로 띄울 때 필요
+istio_base_chart_values:
+  defaultRevision: "default"
+
+# ============================================================
+# Chart 2: istio/istiod
+# ============================================================
+istio_istiod_release_name: "istiod"
+istio_istiod_chart: "istio/istiod"
+
+# istiod control plane 설정
+istio_istiod_chart_values:
+  pilot:
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+    # HPA 는 일단 OFF (단일 replica, 추후 운영 안정화 후 켜기)
+    autoscaleEnabled: false
+    replicaCount: 1
+    # tracing (jaeger) 은 OFF — 추후 kube-prometheus-stack 후에 결정
+    traceSampling: 1.0
+
+  global:
+    # service mesh proxy (sidecar) 기본 resources
+    proxy:
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "200m"
+          memory: "256Mi"
+    # 로깅
+    logging:
+      level: "default:info"
+
+  meshConfig:
+    # access log (Envoy)
+    accessLogFile: "/dev/stdout"
+    # default protocol (HTTP/1.1 + h2 upgrade)
+    enableTracing: false
+
+# ============================================================
+# Chart 3: istio/gateway (ingressgateway)
+# ============================================================
+istio_ingress_release_name: "istio-ingressgateway"
+istio_ingress_chart: "istio/gateway"
+
+# 신환경 ingressgateway LB IP (MetalLB pool 첫 IP)
+# 백업 환경과 동일 → CoreDNS hosts / bastion nginx / VirtualService 모두 호환
+istio_ingress_lb_ip: "10.98.1.250"
+
+# Gateway CR 은 ArgoCD 영역. 여기서는 LoadBalancer Service 만.
+istio_ingress_chart_values:
+  service:
+    type: LoadBalancer
+    # MetalLB 어노테이션 — 명시적으로 10.98.1.250 할당
+    annotations:
+      metallb.io/loadBalancerIPs: "10.98.1.250"
+    # loadBalancerIP 필드는 k8s 1.24+ deprecated → annotation 으로
+    ports:
+      - name: status-port
+        port: 15021
+        targetPort: 15021
+        protocol: TCP
+      - name: http2
+        port: 80
+        targetPort: 8080
+        protocol: TCP
+      - name: https
+        port: 443
+        targetPort: 8443
+        protocol: TCP
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  autoscaling:
+    enabled: false
+  replicaCount: 1
+  # 일반적인 label (Gateway CR 의 selector 가 이 label 을 본다)
+  labels:
+    app: istio-ingressgateway
+    istio: ingressgateway
+
+# ============================================================
+# Verify
+# ============================================================
+istio_wait_timeout: "300s"

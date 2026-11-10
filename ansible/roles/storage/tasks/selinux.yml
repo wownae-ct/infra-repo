@@ -1,0 +1,115 @@
+---
+# ============================================================
+# storage role - selinux sub-task
+# ============================================================
+# Rocky 9 enforcing 환경에서 MinIO/NFS/SMB 동작 보장.
+# - fcontext: /data/minio → container_file_t (백업 fcontext.txt 참조)
+# - ports:    9001/tcp → http_port_t (9000 은 기본 정책에 포함)
+# - booleans: nfs_export_all_rw, samba_export_all_rw
+# - restorecon: 마운트된 디렉토리에 실제 라벨 적용
+#
+# 의존성: lvm.yml 이 먼저 실행되어 /data/minio 가 mount 되어 있어야 함.
+# ============================================================
+
+# ---------- SELinux 상태 확인 ----------
+
+- name: Verify - SELinux state is enforcing
+  ansible.builtin.command: getenforce
+  register: selinux_state
+  changed_when: false
+  failed_when: selinux_state.stdout | lower != storage_selinux_state
+  tags: [storage, selinux, verify]
+
+# ---------- fcontext (영구 정책 DB 에 등록) ----------
+
+- name: Set SELinux fcontext rules
+  community.general.sefcontext:
+    target: "{{ item.target }}"
+    setype: "{{ item.setype }}"
+    state: present
+  become: true
+  loop: "{{ storage_selinux_fcontexts }}"
+  notify: restorecon minio data
+  tags: [storage, selinux, fcontext]
+
+# ---------- ports ----------
+
+- name: Set SELinux port labels
+  community.general.seport:
+    ports: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    setype: "{{ item.setype }}"
+    state: present
+  become: true
+  loop: "{{ storage_selinux_ports }}"
+  tags: [storage, selinux, ports]
+
+# ---------- booleans ----------
+
+- name: Set SELinux booleans (persistent)
+  ansible.posix.seboolean:
+    name: "{{ item.name }}"
+    state: "{{ item.state }}"
+    persistent: true
+  become: true
+  loop: "{{ storage_selinux_booleans }}"
+  tags: [storage, selinux, booleans]
+
+# Handler 즉시 실행 (restorecon 을 verify 전에)
+- name: Flush handlers (restorecon 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [storage, selinux]
+
+# ---------- 검증 ----------
+
+- name: Verify - fcontext 규칙 등록 확인
+  ansible.builtin.shell: |
+    semanage fcontext -l | grep -E "^{{ item.target | regex_escape() }}\s" | grep -q "{{ item.setype }}"
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ storage_selinux_fcontexts }}"
+  register: fcontext_check
+  changed_when: false
+  failed_when: fcontext_check.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, selinux, verify]
+
+- name: Verify - port 9001 labeled http_port_t
+  ansible.builtin.shell: |
+    semanage port -l | grep -E "^http_port_t\s+tcp\s+.*9001"
+  args:
+    executable: /bin/bash
+  become: true
+  register: port_check
+  changed_when: false
+  failed_when: port_check.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, selinux, verify]
+
+- name: Verify - booleans on
+  ansible.builtin.shell: |
+    getsebool {{ item.name }} | grep -q "{{ item.name }} --> on"
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ storage_selinux_booleans }}"
+  register: bool_check
+  changed_when: false
+  failed_when: bool_check.rc != 0
+  when:
+    - not ansible_check_mode
+    - item.state | bool
+  tags: [storage, selinux, verify]
+
+- name: Verify - /data/minio labeled container_file_t (restorecon 후)
+  ansible.builtin.shell: |
+    ls -dZ {{ storage_minio_data_dir }} | grep -q container_file_t
+  args:
+    executable: /bin/bash
+  become: true
+  register: label_check
+  changed_when: false
+  failed_when: label_check.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, selinux, verify]

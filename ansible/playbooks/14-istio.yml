@@ -1,0 +1,47 @@
+---
+# ============================================================
+# Istio 부트스트랩 (helm 3 charts)
+# ============================================================
+# 대상: k8s-master-01 (helm + kubectl)
+#
+# 사전 조건:
+#   - sealed-secrets / metallb / longhorn 완료
+#   - (ArgoCD 는 이미 깔려있어도 무관 — Istio 와 독립)
+#
+# Sub-task 순서 (의존성 강제):
+#   1. base    — istio/base chart (CRDs + 기본 RBAC)
+#   2. istiod  — istio/istiod chart (control plane / Pilot)
+#   3. ingress — istio/gateway chart (ingressgateway LoadBalancer → 10.98.1.250)
+#   4. verify  — 종합 검증 (LB IP=10.98.1.250 단언)
+# ============================================================
+
+- name: "Istio bootstrap (base + istiod + ingressgateway)"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "1) base (CRDs + 기본 RBAC)"
+      ansible.builtin.include_role:
+        name: istio
+      vars:
+        istio_sub_task: base
+
+    - name: "2) istiod (control plane)"
+      ansible.builtin.include_role:
+        name: istio
+      vars:
+        istio_sub_task: istiod
+
+    - name: "3) ingress (ingressgateway + LoadBalancer)"
+      ansible.builtin.include_role:
+        name: istio
+      vars:
+        istio_sub_task: ingress
+
+    - name: "4) verify"
+      ansible.builtin.include_role:
+        name: istio
+      vars:
+        istio_sub_task: verify

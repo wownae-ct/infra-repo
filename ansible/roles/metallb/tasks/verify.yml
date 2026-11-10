@@ -1,0 +1,64 @@
+---
+# ============================================================
+# metallb/tasks/verify.yml — sub-task 3
+# ============================================================
+# controller deployment + speaker DaemonSet + IPAddressPool 등록 확인.
+# ============================================================
+
+- name: "verify | Wait for controller Deployment Available"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ metallb_kubeconfig }}
+      -n {{ metallb_namespace }}
+      wait --for=condition=Available deployment
+      -l {{ metallb_controller_label }}
+      --timeout={{ metallb_wait_timeout }}
+  changed_when: false
+
+- name: "verify | Wait for speaker DaemonSet Ready (all nodes)"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ metallb_kubeconfig }} \
+      -n {{ metallb_namespace }} \
+      rollout status daemonset \
+      -l {{ metallb_speaker_label }} \
+      --timeout={{ metallb_wait_timeout }}
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: "verify | List IPAddressPools"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ metallb_kubeconfig }} \
+      -n {{ metallb_namespace }} \
+      get ipaddresspool -o wide
+  args:
+    executable: /bin/bash
+  register: _v_pools
+  changed_when: false
+
+- name: "verify | Show IPAddressPools"
+  ansible.builtin.debug:
+    msg: "{{ _v_pools.stdout_lines }}"
+
+- name: "verify | Assert our pool exists"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ metallb_kubeconfig }} \
+      -n {{ metallb_namespace }} \
+      get ipaddresspool {{ metallb_pool_name }} -o name
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: "verify | List L2Advertisements"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ metallb_kubeconfig }} \
+      -n {{ metallb_namespace }} \
+      get l2advertisement -o wide
+  args:
+    executable: /bin/bash
+  register: _v_l2
+  changed_when: false
+
+- name: "verify | Show L2Advertisements"
+  ansible.builtin.debug:
+    msg: "{{ _v_l2.stdout_lines }}"

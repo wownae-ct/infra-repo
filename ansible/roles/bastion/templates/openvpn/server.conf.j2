@@ -1,0 +1,45 @@
+# /etc/openvpn/server.conf - managed by Ansible (bastion role)
+# 외부 → 내부망 (10.98.1.0/24) 접근 VPN 서버.
+
+port {{ bastion_openvpn_port }}
+proto {{ bastion_openvpn_proto }}
+dev {{ bastion_openvpn_dev }}
+
+# 인증서/키
+ca ca.crt
+cert server.crt
+key server.key
+dh dh2048.pem
+
+# 네트워크 토폴로지
+topology subnet
+server {{ bastion_openvpn_server_network }}
+ifconfig-pool-persist /var/log/openvpn/ipp.txt
+
+# Push routes (클라이언트에게 내부망 라우팅 알림)
+{% for route in bastion_openvpn_push_routes %}
+push "route {{ route }}"
+{% endfor %}
+
+# Push DNS (내부 BIND9)
+push "dhcp-option DNS {{ bastion_openvpn_push_dns }}"
+
+# 클라이언트끼리 통신
+{% if bastion_openvpn_client_to_client | bool %}
+client-to-client
+{% endif %}
+
+# 연결 유지
+keepalive {{ bastion_openvpn_keepalive }}
+
+# 보안/안정성
+persist-key
+persist-tun
+
+# 로그
+status /var/log/openvpn/openvpn-status.log
+log-append /var/log/openvpn/openvpn.log
+verb {{ bastion_openvpn_verb }}
+
+# 클라이언트에게 서버 재시작 알림
+explicit-exit-notify 1

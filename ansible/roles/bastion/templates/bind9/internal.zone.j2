@@ -1,0 +1,17 @@
+; /etc/bind/{{ bastion_bind9_internal_domain }}.zone - managed by Ansible
+; Internal zone (내부망 전용)
+
+$TTL    604800
+@       IN      SOA     ns1.{{ bastion_bind9_internal_domain }}. admin.{{ bastion_bind9_internal_domain }}. (
+                              {{ bastion_bind9_internal_serial }} ; Serial
+                         604800 ; Refresh
+                          86400 ; Retry
+                        2419200 ; Expire
+                         604800 ); Negative Cache TTL
+;
+@       IN      NS      ns1.{{ bastion_bind9_internal_domain }}.
+
+; A Records
+{% for r in bastion_bind9_internal_records %}
+{{ '%-15s' | format(r.name) }} IN      A       {{ r.ip }}
+{% endfor %}

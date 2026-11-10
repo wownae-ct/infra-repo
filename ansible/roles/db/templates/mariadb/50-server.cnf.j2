@@ -1,0 +1,31 @@
+# /etc/mysql/mariadb.conf.d/50-server.cnf - managed by Ansible (db role)
+# 백업 (mariadb.conf.d/50-server.cnf) 그대로 + InnoDB buffer pool 튜닝.
+
+[server]
+
+[mysqld]
+# Basic Settings
+pid-file        = /run/mysqld/mysqld.pid
+basedir         = /usr
+datadir         = {{ db_mariadb_datadir }}
+port            = {{ db_mariadb_port }}
+bind-address    = {{ db_mariadb_bind_address }}
+
+# Fine Tuning
+max_connections = {{ db_mariadb_max_connections }}
+
+# Logging
+expire_logs_days = {{ db_mariadb_expire_logs_days }}
+
+# Character sets
+character-set-server  = {{ db_mariadb_character_set_server }}
+collation-server      = {{ db_mariadb_collation_server }}
+
+# InnoDB
+innodb_buffer_pool_size = {{ db_mariadb_innodb_buffer_pool_size }}
+
+[embedded]
+
+[mariadb]
+
+[mariadb-10.6]

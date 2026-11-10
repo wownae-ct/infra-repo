@@ -1,0 +1,106 @@
+---
+# ============================================================
+# bastion role - wireguard sub-task
+# ============================================================
+# AWS EC2 와의 P2P 터널. bastion 10.99.1.2 ↔ EC2 10.99.1.1.
+# 키는 vault 변수에서 (PrivateKey, Peer PublicKey).
+# ============================================================
+
+# ---------- 패키지 ----------
+
+- name: Install wireguard
+  ansible.builtin.apt:
+    name:
+      - wireguard
+      - wireguard-tools
+    state: present
+  become: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  tags: [bastion, wireguard, packages]
+
+
+# ---------- 설정 파일 ----------
+
+- name: Render /etc/wireguard/{{ bastion_wireguard_interface }}.conf
+  ansible.builtin.template:
+    src: wireguard/wg0.conf.j2
+    dest: "/etc/wireguard/{{ bastion_wireguard_interface }}.conf"
+    owner: root
+    group: root
+    mode: '0600'        # 시크릿 키 들어있음 - root만 읽기
+    backup: true
+  become: true
+  notify: restart wireguard
+  tags: [bastion, wireguard, config]
+
+
+# ---------- iptables INPUT (51820/udp) ----------
+
+- name: Ensure INPUT ACCEPT for WireGuard from external interface
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: "{{ bastion_iptables_external_iface }}"
+    protocol: udp
+    destination_port: "{{ bastion_wireguard_listen_port }}"
+    jump: ACCEPT
+    state: present
+    comment: "bastion: wireguard"
+  become: true
+  notify: save iptables rules
+  tags: [bastion, wireguard, iptables]
+
+
+# ---------- 서비스 ----------
+
+- name: Ensure wireguard service state matches toggle
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ bastion_wireguard_interface }}"
+    enabled: "{{ bastion_wireguard_enabled | bool }}"
+    state: "{{ 'started' if bastion_wireguard_enabled | bool else 'stopped' }}"
+  become: true
+  when: not ansible_check_mode
+  tags: [bastion, wireguard, service]
+
+- name: Flush handlers (wireguard 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [bastion, wireguard]
+
+
+# ---------- 검증 ----------
+
+- name: Verify - wireguard interface up
+  ansible.builtin.command: ip link show {{ bastion_wireguard_interface }}
+  become: true
+  register: wg_link
+  changed_when: false
+  failed_when: wg_link.rc != 0
+  when:
+    - not ansible_check_mode
+    - bastion_wireguard_enabled | bool
+  tags: [bastion, wireguard, verify]
+
+- name: Verify - wg show 출력 (peer 연결 정보)
+  ansible.builtin.command: wg show {{ bastion_wireguard_interface }}
+  become: true
+  register: wg_show
+  changed_when: false
+  failed_when: wg_show.rc != 0
+  when:
+    - not ansible_check_mode
+    - bastion_wireguard_enabled | bool
+  tags: [bastion, wireguard, verify]
+
+- name: Verify - peer ping (EC2 측 10.99.1.1)
+  ansible.builtin.shell: |
+    ping -c 3 -W 2 10.99.1.1
+  args:
+    executable: /bin/bash
+  become: true
+  register: wg_ping
+  changed_when: false
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - bastion_wireguard_enabled | bool
+  tags: [bastion, wireguard, verify]

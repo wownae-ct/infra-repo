@@ -1,0 +1,62 @@
+---
+# ============================================================
+# bastion role - chrony sub-task (server mode)
+# ============================================================
+# common role 이 chrony 를 클라이언트 모드로 설치 + 설정.
+# 여기서는 drop-in 파일 추가로 server 기능만 활성화.
+# ============================================================
+
+- name: Render chrony server drop-in (allow 디렉티브)
+  ansible.builtin.template:
+    src: chrony/server-allow.conf.j2
+    dest: /etc/chrony/conf.d/bastion-server.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  notify: restart chronyd
+  tags: [bastion, chrony, config]
+
+# Handler 즉시 실행 (verify 전에 새 설정 반영 보장)
+- name: Flush handlers (chrony 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [bastion, chrony]
+
+# ---------- 검증 ----------
+
+- name: Verify - chrony service running
+  ansible.builtin.systemd:
+    name: chrony
+    state: started
+  register: chrony_running
+  changed_when: false
+  become: true
+  when: not ansible_check_mode
+  tags: [bastion, chrony, verify]
+
+- name: Verify - chrony tracking (시간 동기화 동작)
+  ansible.builtin.shell: chronyc tracking | head -1
+  become: true
+  register: chrony_tracking
+  changed_when: false
+  failed_when: chrony_tracking.rc != 0
+  when: not ansible_check_mode
+  tags: [bastion, chrony, verify]
+
+- name: Verify - 다른 VM 들이 bastion 을 NTP source 로 인식 (1분 대기 + retry)
+  ansible.builtin.shell: |
+    chronyc sources -n | grep -E "^\^[\*\+\?\-].*(20\.20\.20\.230|bastion|_gateway)"
+  delegate_to: "{{ item }}"
+  become: false
+  loop:
+    - db
+    - k8s-master-01
+    - storage
+  register: ntp_check
+  changed_when: false
+  retries: 6
+  delay: 10
+  until: ntp_check.rc == 0
+  when: not ansible_check_mode
+  tags: [bastion, chrony, verify]

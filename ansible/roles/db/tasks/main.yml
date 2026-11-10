@@ -1,0 +1,31 @@
+---
+# ============================================================
+# db role - main orchestration
+# ============================================================
+# 적용 순서 (의존성 고려):
+#   1. packages   - mariadb-server, ufw, python3-pymysql
+#   2. ssh        - sshd 22 → 2222 (storage 패턴)
+#   3. ufw        - 방화벽 (ssh 뒤: 2222 허용 박힌 후 22 닫음)
+#   4. mariadb    - 설정 + bind-address + 서비스
+#   5. grants     - 유저/권한 (해시 그대로)
+# ============================================================
+
+- name: packages 설치
+  ansible.builtin.import_tasks: packages.yml
+  tags: [db, packages]
+
+- name: SSH (sshd_config drop-in, 22 → 2222)
+  ansible.builtin.import_tasks: ssh.yml
+  tags: [db, ssh]
+
+- name: UFW (방화벽)
+  ansible.builtin.import_tasks: ufw.yml
+  tags: [db, ufw]
+
+- name: MariaDB (설정 + 서비스)
+  ansible.builtin.import_tasks: mariadb.yml
+  tags: [db, mariadb]
+
+- name: MariaDB grants (유저/권한)
+  ansible.builtin.import_tasks: grants.yml
+  tags: [db, grants]

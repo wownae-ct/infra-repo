@@ -1,0 +1,28 @@
+---
+# ============================================================
+# Phase 5b — k8s control-plane HA
+# ============================================================
+# 대상: k8s_masters (3대)
+# 사양표 sub-task #4
+#
+# 결과:
+#   - VIP {{ k8s_vip }} 가 master-01 에 박힘 (priority 101)
+#   - HAProxy frontend *:8443 → masters:6443 (3대 roundrobin)
+#   - HAProxy stats *:9000
+#
+# 후속:
+#   07-k8s-bootstrap.yml (5c — master-01 에서 kubeadm init)
+# ============================================================
+
+- name: "Phase 5b | k8s HA (keepalived + haproxy)"
+  hosts: k8s_masters
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "5b → ha (keepalived + haproxy)"
+      ansible.builtin.include_role:
+        name: k8s
+      vars:
+        k8s_sub_task: ha

@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+# /etc/modules-load.d/k8s.conf
+#
+# k8s가 요구하는 커널 모듈을 부팅 시 자동 로드한다.
+#   - overlay      : containerd overlayfs (이미지 레이어 스택)
+#   - br_netfilter : Linux bridge 위에서 iptables 가 동작하게 함
+#                    (Pod 트래픽이 bridge 경유 시 NetworkPolicy / kube-proxy 가 작동 가능)
+#
+# defaults/main.yml 의 k8s_kernel_modules 를 그대로 렌더.
+# 모듈 추가/제거하려면 defaults 만 고치면 됨.
+
+{% for mod in k8s_kernel_modules %}
+{{ mod }}
+{% endfor %}

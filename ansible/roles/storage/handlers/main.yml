@@ -1,0 +1,87 @@
+---
+# ============================================================
+# storage role - handlers
+# ============================================================
+# 여러 sub-task 가 공유하는 핸들러 모음.
+# task 에서 notify 로 호출.
+# ============================================================
+
+# ---------- SSH ----------
+
+- name: restart sshd
+  ansible.builtin.systemd:
+    name: sshd
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+# ---------- SELinux ----------
+# fcontext 변경 후 실제 파일 시스템에 라벨 적용.
+# (target 디렉토리가 이미 존재하는 경우만 의미 있음. lvm.yml 이 먼저 mount 함.)
+
+- name: restorecon minio data
+  ansible.builtin.command: restorecon -Rv {{ storage_minio_data_dir }}
+  become: true
+  when: not ansible_check_mode
+
+
+# ---------- firewalld ----------
+
+- name: reload firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    state: reloaded
+  become: true
+  when: not ansible_check_mode
+
+
+# ---------- systemd ----------
+# minio.service 유닛 파일 변경 시 daemon-reload 필요.
+
+- name: daemon-reload
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+  when: not ansible_check_mode
+
+
+# ---------- MinIO ----------
+
+- name: restart minio
+  ansible.builtin.systemd:
+    name: minio
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+
+# ---------- NFS ----------
+
+- name: reload nfs exports
+  ansible.builtin.command: exportfs -ra
+  become: true
+  when: not ansible_check_mode
+
+- name: restart nfs-server
+  ansible.builtin.systemd:
+    name: nfs-server
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+
+# ---------- Samba ----------
+
+- name: restart smb
+  ansible.builtin.systemd:
+    name: smb
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+- name: restart nmb
+  ansible.builtin.systemd:
+    name: nmb
+    state: restarted
+  become: true
+  when: not ansible_check_mode

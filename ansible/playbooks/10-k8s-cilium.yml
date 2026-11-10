@@ -1,0 +1,32 @@
+---
+# ============================================================
+# Phase 5f — Cilium CNI 1.19.1 설치
+# ============================================================
+# 사양표 sub-task #8
+#
+# 대상: k8s-master-01 (helm 실행 노드)
+#
+# 사전 조건:
+#   - 5a~5e 완료 (6대 노드 join, NotReady 상태)
+#
+# 결과:
+#   - cilium DaemonSet 6대 노드 배포, Hubble relay+ui 배포
+#   - 모든 노드 Ready 전환
+#   - coredns Running 전환
+#
+# 후속:
+#   - Phase 6 (애드온): SealedSecrets / MetalLB / Longhorn / Istio / ArgoCD
+# ============================================================
+
+- name: "Phase 5f | Install Cilium CNI 1.19.1"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "5f → cilium"
+      ansible.builtin.include_role:
+        name: k8s
+      vars:
+        k8s_sub_task: cilium

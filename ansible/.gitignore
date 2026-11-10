@@ -1,0 +1,10 @@
+# 실제 inventory와 변수, 인증서·키는 올리지 않습니다(예시는 *.example)
+inventories/*/hosts.ini
+inventories/*/hosts-*.ini
+inventories/*/group_vars/all.yml
+inventories/*/host_vars/*.yml
+roles/bastion/files/
+*.key
+*.pem
+*.retry
+.vault_pass*

@@ -1,0 +1,57 @@
+---
+# ============================================================
+# storage role - main orchestration
+# ============================================================
+# storage 의 모든 sub-task 를 순서대로 실행.
+# 각 sub-task 는 별도 파일로 분리, 여기서 import.
+#
+# 부분 적용:
+#   ansible-playbook ... --tags packages
+#   ansible-playbook ... --tags lvm
+#   ansible-playbook ... --tags minio
+#
+# 적용 순서 (의존성 고려):
+#   1. packages   - 패키지 설치
+#   2. selinux    - fcontext/ports/booleans (서비스 시작 전)
+#   3. lvm        - /data/{minio,nfs,smb} 마운트
+#   4. firewalld  - zone/규칙 (서비스 노출 전)
+#   5. minio      - binary + env + systemd
+#   6. nfs        - exports + nfs-server
+#   7. smb        - 유저/그룹 + smb.conf
+# ============================================================
+
+- name: packages 설치
+  ansible.builtin.import_tasks: packages.yml
+  tags: [storage, packages]
+
+- name: DNS 클라이언트 (bastion BIND9 으로 전환)
+  ansible.builtin.import_tasks: dns.yml
+  tags: [storage, dns]
+
+- name: SELinux (fcontext + ports + booleans)
+  ansible.builtin.import_tasks: selinux.yml
+  tags: [storage, selinux]
+
+- name: LVM (VG + LV + xfs + mount)
+  ansible.builtin.import_tasks: lvm.yml
+  tags: [storage, lvm]
+
+- name: firewalld (zone 설정)
+  ansible.builtin.import_tasks: firewalld.yml
+  tags: [storage, firewalld]
+
+- name: SSH (sshd_config drop-in, 22 → 2222)
+  ansible.builtin.import_tasks: ssh.yml
+  tags: [storage, ssh]
+
+- name: MinIO (binary + env + systemd)
+  ansible.builtin.import_tasks: minio.yml
+  tags: [storage, minio]
+
+- name: NFS (exports + nfs-server)
+  ansible.builtin.import_tasks: nfs.yml
+  tags: [storage, nfs]
+
+- name: Samba (유저/그룹 + smb.conf)
+  ansible.builtin.import_tasks: smb.yml
+  tags: [storage, smb]

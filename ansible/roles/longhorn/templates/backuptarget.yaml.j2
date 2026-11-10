@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Longhorn BackupTarget (v1.11+ 신 CRD)
+# v1.10 이전엔 setting/backup-target 에 직접 박았지만, 1.11+ 부턴 별도 리소스.
+apiVersion: longhorn.io/v1beta2
+kind: BackupTarget
+metadata:
+  name: default
+  namespace: {{ longhorn_namespace }}
+spec:
+  backupTargetURL: "{{ longhorn_backup_target }}"
+  credentialSecret: "{{ longhorn_backup_secret_name }}"
+  pollInterval: "5m"

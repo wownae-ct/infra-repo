@@ -1,0 +1,64 @@
+! {{ ansible_managed }}
+! /etc/keepalived/keepalived.conf
+!
+! k8s control-plane 용 VIP failover.
+! VIP : {{ k8s_vip }}/{{ k8s_vip_prefix | default(24) }}
+! IF  : {{ k8s_vip_interface }}
+! VRID: {{ k8s_keepalived_virtual_router_id }}
+!
+! priority/state 는 host_vars 에서 노드별로 결정:
+!   master-01 : MASTER / 101
+!   master-02 : BACKUP / 100
+!   master-03 : BACKUP /  99
+
+global_defs {
+    router_id LVS_{{ inventory_hostname | upper | replace('-', '_') }}
+    enable_script_security
+    script_user root
+}
+
+! ----------------------------------------------------------------
+! HAProxy health check.
+! HAProxy 가 죽으면 priority 가 weight 만큼 떨어져 다른 master 가 VIP 인수.
+! ----------------------------------------------------------------
+vrrp_script chk_haproxy {
+    script "/usr/bin/killall -0 haproxy"
+    interval 2
+    weight -4
+    fall 2
+    rise 1
+}
+
+vrrp_instance VI_1 {
+    state {{ k8s_keepalived_state }}
+    interface {{ k8s_vip_interface }}
+    virtual_router_id {{ k8s_keepalived_virtual_router_id }}
+    priority {{ k8s_keepalived_priority }}
+    advert_int {{ k8s_keepalived_advert_int }}
+
+    ! nopreempt 없음 (의도적):
+    !   master-01 이 복구되면 자동으로 VIP 되찾음.
+    !   nopreempt 를 켜면 한 번 failover 된 후 수동으로 옮겨야 해서 운영 부담 증가.
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ k8s_keepalived_auth_pass }}
+    }
+
+    ! Multicast 대신 unicast (Hyper-V/일반 cloud 환경 호환).
+    ! 자기 IP 를 src 로, 나머지 master IP 들을 peer 로.
+    unicast_src_ip {{ k8s_node_ip }}
+    unicast_peer {
+{% for h in groups['k8s_masters'] if h != inventory_hostname %}
+        {{ hostvars[h].k8s_node_ip }}
+{% endfor %}
+    }
+
+    virtual_ipaddress {
+        {{ k8s_vip }}/{{ k8s_vip_prefix | default(24) }} dev {{ k8s_vip_interface }}
+    }
+
+    track_script {
+        chk_haproxy
+    }
+}

@@ -1,0 +1,30 @@
+---
+# ============================================================
+# Phase 1: common role 적용 (전체 9대)
+# ============================================================
+#
+# 사용:
+#   ansible-playbook -i inventories/hyperv/hosts.ini playbooks/01-common.yml --ask-vault-pass
+#
+# 처음엔 dry-run 권장:
+#   ansible-playbook -i inventories/hyperv/hosts.ini playbooks/01-common.yml \
+#     --ask-vault-pass --check --diff
+#
+# 특정 태그만:
+#   --tags timezone
+#   --tags packages
+#   --tags hosts
+#
+# 특정 호스트만:
+#   --limit bastion
+#   --limit infra
+#   --limit k8s_cluster
+# ============================================================
+
+- name: Common base configuration for all VMs
+  hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - common

@@ -1,0 +1,39 @@
+---
+# ============================================================
+# CoreDNS hosts patch
+# ============================================================
+# 목적:
+#   클러스터 내부 Pod 들이 *.internal 7개 + example.ddns.net / s3.example.ddns.net
+#   2개 도메인을 resolve 할 수 있게 만든다.
+#
+# 디자인:
+#   - ConfigMap 의 Corefile 안 BEGIN/END 마커 사이 영역만 idempotent 하게 patch
+#   - kubeadm 의 default Corefile (forward, cache, prometheus 등) 은 보존
+#
+# 사전 조건:
+#   - Istio ingressgateway = 10.98.1.250 동작 중
+#   - bastion VM 살아있어야 example.ddns.net 의 의미가 있음
+#
+# Sub-task 순서:
+#   1. patch  — Corefile 의 hosts 블록 삽입/갱신 + ConfigMap apply + rollout restart
+#   2. verify — busybox Pod 안에서 nslookup 으로 도메인 5개 resolve 확인
+# ============================================================
+
+- name: "CoreDNS hosts patch"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "1) patch (Corefile hosts block)"
+      ansible.builtin.include_role:
+        name: coredns
+      vars:
+        coredns_sub_task: patch
+
+    - name: "2) verify (nslookup inside Pod)"
+      ansible.builtin.include_role:
+        name: coredns
+      vars:
+        coredns_sub_task: verify

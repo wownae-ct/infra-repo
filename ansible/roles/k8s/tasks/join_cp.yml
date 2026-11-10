@@ -1,0 +1,77 @@
+---
+# ============================================================
+# roles/k8s/tasks/join_cp.yml — sub-task 6
+# ============================================================
+# 대상: k8s_masters[1:] (master-02, master-03)
+# 호출: include_role: { name: k8s } vars: { k8s_sub_task: join_cp }
+#
+# 사전 조건:
+#   - master-01 에서 같은 playbook 호출 안에서 bootstrap (또는 join token
+#     재발급) 이 먼저 돌아 hostvars 에 k8s_join_command_cp 가 set_fact 됨.
+#
+# 멱등성:
+#   - /etc/kubernetes/admin.conf 가 이미 있으면 skip.
+# ============================================================
+
+- name: "join_cp | Check if already joined"
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: _admin_conf
+
+- name: "join_cp | Skip — already a control-plane node"
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} already joined; admin.conf exists."
+  when: _admin_conf.stat.exists
+
+- name: "join_cp | Resolve bootstrap host (first master)"
+  ansible.builtin.set_fact:
+    _bootstrap_host: "{{ groups['k8s_masters'][0] }}"
+
+- name: "join_cp | Resolve join command from bootstrap host's hostvars"
+  ansible.builtin.set_fact:
+    _join_cp_cmd: "{{ hostvars[_bootstrap_host]['k8s_join_command_cp'] | default('') | trim }}"
+
+- name: "join_cp | Assert join command was retrieved"
+  ansible.builtin.assert:
+    that:
+      - _join_cp_cmd | length > 0
+      - "'--control-plane' in _join_cp_cmd"
+      - "'--certificate-key' in _join_cp_cmd"
+    fail_msg: >-
+      Could not retrieve control-plane join command from {{ _bootstrap_host }}.
+      Did bootstrap (or token refresh) run in the same ansible-playbook call?
+    quiet: true
+  when: not _admin_conf.stat.exists
+
+- name: "join_cp | kubeadm join (control-plane)"
+  ansible.builtin.command:
+    cmd: "{{ _join_cp_cmd }}"
+  register: _join_out
+  when: not _admin_conf.stat.exists
+  changed_when: true
+
+- name: "join_cp | Show join output (last 20 lines)"
+  ansible.builtin.debug:
+    msg: "{{ _join_out.stdout_lines[-20:] }}"
+  when:
+    - not _admin_conf.stat.exists
+    - _join_out.stdout_lines is defined
+
+# admin kubeconfig 설치
+- name: "join_cp | Ensure ~/.kube exists for {{ ansible_user }}"
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0700'
+
+- name: "join_cp | Copy admin.conf → ~/.kube/config"
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0600'
+    force: true

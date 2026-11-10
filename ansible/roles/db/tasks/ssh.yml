@@ -1,0 +1,88 @@
+---
+# ============================================================
+# db role - ssh sub-task
+# ============================================================
+# sshd_config.d drop-in 으로 SSH 포트 변경 (22 → 2222) + 보안 정책.
+# storage 패턴 그대로 (Rocky → Ubuntu 차이만 반영).
+#
+# Ubuntu 22 는 서비스 이름이 'ssh' (Rocky 의 'sshd' 아님).
+# SELinux 없음 → port label 등록 task 불필요.
+#
+# 안전 cutover 전략:
+#   1. db_ssh_keep_port_22: true → 22 + 2222 둘 다 listen
+#   2. 2222 로 접속 테스트 (inventory ansible_port=2222 로 변경)
+#   3. 통과되면 db_ssh_keep_port_22: false → 22 닫힘
+# ============================================================
+
+# ---------- sshd drop-in 설정 ----------
+
+- name: Render sshd_config.d drop-in
+  ansible.builtin.template:
+    src: ssh/sshd_drop_in.conf.j2
+    dest: /etc/ssh/sshd_config.d/50-db.conf
+    owner: root
+    group: root
+    mode: '0600'
+    backup: true
+    validate: "sshd -t -f %s"
+  become: true
+  notify: restart sshd
+  tags: [db, ssh, config]
+
+# Handler 즉시 실행 (sshd 재시작 즉시 적용)
+- name: Flush handlers (sshd 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [db, ssh]
+
+# ---------- 검증 ----------
+
+- name: Verify - sshd 서비스 active
+  ansible.builtin.systemd:
+    name: ssh
+    state: started
+  become: true
+  register: sshd_running
+  changed_when: false
+  failed_when: sshd_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [db, ssh, verify]
+
+- name: Verify - sshd listening on {{ db_ssh_port }}
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":{{ db_ssh_port }}\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: sshd_listen_new
+  changed_when: false
+  failed_when: sshd_listen_new.rc != 0
+  when: not ansible_check_mode
+  tags: [db, ssh, verify]
+
+- name: Verify - sshd listening on 22 (keep_port_22 = true)
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":22\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: sshd_listen_22
+  changed_when: false
+  failed_when: sshd_listen_22.rc != 0
+  when:
+    - not ansible_check_mode
+    - db_ssh_keep_port_22 | bool
+  tags: [db, ssh, verify]
+
+- name: Verify - sshd NOT listening on 22 (keep_port_22 = false)
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":22\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: sshd_no_22
+  changed_when: false
+  failed_when: sshd_no_22.rc == 0
+  when:
+    - not ansible_check_mode
+    - not (db_ssh_keep_port_22 | bool)
+  tags: [db, ssh, verify]

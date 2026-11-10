@@ -1,0 +1,228 @@
+---
+# ============================================================
+# storage role - smb sub-task
+# ============================================================
+# Samba 서버 (백업 그대로 재현).
+# - smbgrp 그룹 (GID 2000)
+# - laputa (UID 2001), totoro (UID 2002) 시스템 유저
+# - smbpasswd 등록 (vault 비밀번호)
+# - smb.conf 렌더링
+# - 공유 디렉토리 (/data/smb/share, /data/smb/{laputa,totoro})
+# - smb + nmb 서비스
+#
+# 의존성:
+#   - packages.yml:  samba, samba-common-tools
+#   - lvm.yml:       /data/smb 마운트
+#   - selinux.yml:   samba_export_all_rw boolean
+#   - firewalld.yml: samba 서비스 허용
+# ============================================================
+
+# ---------- smbgrp 그룹 ----------
+
+- name: Ensure smbgrp group
+  ansible.builtin.group:
+    name: "{{ storage_smb_group.name }}"
+    gid: "{{ storage_smb_group.gid }}"
+    state: present
+  become: true
+  tags: [storage, smb, users]
+
+# ---------- 시스템 유저 (laputa, totoro) ----------
+
+- name: Ensure SMB system users
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    uid: "{{ item.uid }}"
+    group: "{{ storage_smb_group.name }}"
+    comment: "{{ item.description }}"
+    shell: /sbin/nologin
+    home: "{{ storage_smb_data_dir }}/{{ item.name }}"
+    create_home: false
+    state: present
+  become: true
+  loop: "{{ storage_smb_users }}"
+  loop_control:
+    label: "{{ item.name }} (UID {{ item.uid }})"
+  tags: [storage, smb, users]
+
+# ---------- 공유 디렉토리 ----------
+
+- name: Ensure /data/smb/share directory
+  ansible.builtin.file:
+    path: "{{ storage_smb_share_path }}"
+    state: directory
+    owner: root
+    group: "{{ storage_smb_group.name }}"
+    mode: '2770'   # setgid bit: 새 파일이 smbgrp 그룹으로 자동 생성
+  become: true
+  tags: [storage, smb, dirs]
+
+- name: Ensure per-user home directories
+  ansible.builtin.file:
+    path: "{{ storage_smb_data_dir }}/{{ item.name }}"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ storage_smb_group.name }}"
+    mode: '0775'
+  become: true
+  loop: "{{ storage_smb_users }}"
+  loop_control:
+    label: "{{ storage_smb_data_dir }}/{{ item.name }}"
+  tags: [storage, smb, dirs]
+
+# ---------- smb.conf ----------
+
+- name: Render /etc/samba/smb.conf
+  ansible.builtin.template:
+    src: smb/smb.conf.j2
+    dest: /etc/samba/smb.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+    validate: "testparm -s %s"
+  become: true
+  notify:
+    - restart smb
+    - restart nmb
+  tags: [storage, smb, config]
+
+# ---------- smbpasswd 등록 ----------
+# pdbedit -L 로 등록 여부 확인 → 없으면 smbpasswd 로 추가.
+# 이미 등록된 유저는 건드리지 않음 (비밀번호 매번 덮어쓰면 changed 계속 뜸).
+#
+# 비밀번호 변경하려면: 수동으로 sudo smbpasswd -a <user> 하거나,
+# 일회성으로 force_smbpasswd_update=true 변수 박고 실행.
+
+- name: Check if SMB users registered in smbpasswd DB
+  ansible.builtin.command: pdbedit -L
+  become: true
+  register: pdbedit_list
+  changed_when: false
+  tags: [storage, smb, smbpasswd]
+
+- name: Add SMB users to smbpasswd DB
+  ansible.builtin.shell: |
+    set -o pipefail
+    printf '%s\n%s\n' '{{ item.password }}' '{{ item.password }}' \
+      | smbpasswd -a -s {{ item.name }}
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ storage_smb_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in pdbedit_list.stdout
+  no_log: true   # 비밀번호 로그 노출 방지
+  notify:
+    - restart smb
+  tags: [storage, smb, smbpasswd]
+
+# ---------- 서비스 ----------
+
+- name: Ensure smb service enabled and running
+  ansible.builtin.systemd:
+    name: smb
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [storage, smb, service]
+
+- name: Ensure nmb service enabled and running
+  ansible.builtin.systemd:
+    name: nmb
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [storage, smb, service]
+
+# Handler 즉시 실행 (verify 전에 새 설정 반영 보장)
+- name: Flush handlers (smb 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [storage, smb]
+
+# ---------- 검증 ----------
+
+- name: Verify - smb.conf syntax (testparm)
+  ansible.builtin.command: testparm -s
+  become: true
+  register: testparm_check
+  changed_when: false
+  failed_when: testparm_check.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, smb, verify]
+
+- name: Verify - smb 서비스 active
+  ansible.builtin.systemd:
+    name: smb
+    state: started
+  become: true
+  register: smb_running
+  changed_when: false
+  failed_when: smb_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [storage, smb, verify]
+
+- name: Verify - nmb 서비스 active
+  ansible.builtin.systemd:
+    name: nmb
+    state: started
+  become: true
+  register: nmb_running
+  changed_when: false
+  failed_when: nmb_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [storage, smb, verify]
+
+- name: Verify - smb 포트 445 listening
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":445\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: smb_listen
+  changed_when: false
+  failed_when: smb_listen.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, smb, verify]
+
+- name: Verify - SMB 유저 smbpasswd DB 등록 확인
+  ansible.builtin.shell: |
+    pdbedit -L | grep -q "^{{ item.name }}:"
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ storage_smb_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: pdbedit_check
+  changed_when: false
+  failed_when: pdbedit_check.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, smb, verify]
+
+- name: Verify - smb.conf 에 [share] section 존재
+  ansible.builtin.shell: |
+    testparm -s 2>/dev/null | grep -q '^\[share\]'
+  args:
+    executable: /bin/bash
+  become: true
+  register: share_section
+  changed_when: false
+  failed_when: share_section.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, smb, verify]
+
+- name: Verify - smb.conf 에 [homes] section 존재
+  ansible.builtin.shell: |
+    testparm -s 2>/dev/null | grep -q '^\[homes\]'
+  args:
+    executable: /bin/bash
+  become: true
+  register: homes_section
+  changed_when: false
+  failed_when: homes_section.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, smb, verify]

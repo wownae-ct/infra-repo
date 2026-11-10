@@ -1,0 +1,135 @@
+---
+# ============================================================
+# argocd/tasks/helm.yml — sub-task 1
+# ============================================================
+# 대상: k8s-master-01
+# ArgoCD chart install. sealed-secrets/metallb/longhorn 과 동일한
+# 멱등성 패턴 (status + get values + slurp 비교).
+#
+# Admin password (bcrypt) 는 values 에 포함되므로 values 파일은 0600.
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. namespace 보장
+# ------------------------------------------------------------
+- name: "helm | Ensure namespace {{ argocd_namespace }} exists"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ argocd_kubeconfig }} \
+      create namespace {{ argocd_namespace }} \
+      --dry-run=client -o yaml | \
+    kubectl --kubeconfig={{ argocd_kubeconfig }} apply -f -
+  args:
+    executable: /bin/bash
+  register: _ns_apply
+  changed_when: "'created' in _ns_apply.stdout"
+
+# ------------------------------------------------------------
+# 2. helm repo 등록 / 업데이트
+# ------------------------------------------------------------
+- name: "helm | Add argo helm repo"
+  ansible.builtin.command:
+    cmd: "helm repo add {{ argocd_helm_repo_name }} {{ argocd_helm_repo_url }}"
+  register: _repo_add
+  changed_when: "'has been added' in _repo_add.stdout"
+  failed_when:
+    - _repo_add.rc != 0
+    - "'already exists' not in _repo_add.stderr"
+
+- name: "helm | Update repo"
+  ansible.builtin.command:
+    cmd: "helm repo update {{ argocd_helm_repo_name }}"
+  changed_when: false
+
+# ------------------------------------------------------------
+# 3. values.yaml 렌더 (admin bcrypt 포함 → 0600)
+# ------------------------------------------------------------
+- name: "helm | Render values.yaml (contains admin bcrypt)"
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: /etc/kubernetes/argocd-values.yaml
+    owner: root
+    group: root
+    mode: '0600'
+    backup: true
+  no_log: true
+
+# ------------------------------------------------------------
+# 4. 멱등성 판정
+# ------------------------------------------------------------
+- name: "helm | Check current release status"
+  ansible.builtin.command:
+    cmd: >
+      helm status {{ argocd_helm_release_name }}
+      --namespace {{ argocd_namespace }}
+      --kubeconfig {{ argocd_kubeconfig }}
+      -o json
+  register: _argocd_status
+  changed_when: false
+  failed_when: false
+
+- name: "helm | Get current values (if release exists)"
+  ansible.builtin.command:
+    cmd: >
+      helm get values {{ argocd_helm_release_name }}
+      --namespace {{ argocd_namespace }}
+      --kubeconfig {{ argocd_kubeconfig }}
+      -o yaml
+  register: _argocd_cur_values
+  changed_when: false
+  failed_when: false
+  when: _argocd_status.rc == 0
+  no_log: true
+
+- name: "helm | Read rendered values file"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/argocd-values.yaml
+  register: _argocd_rendered
+  no_log: true
+
+- name: "helm | Decide if install/upgrade is needed"
+  ansible.builtin.set_fact:
+    _argocd_install_needed: >-
+      {{
+        _argocd_status.rc != 0
+        or (_argocd_cur_values.stdout | default('') | from_yaml | default({}))
+           != (_argocd_rendered.content | b64decode | from_yaml)
+      }}
+  no_log: true
+
+# ------------------------------------------------------------
+# 5. helm install (or upgrade)
+# ------------------------------------------------------------
+- name: "helm | helm upgrade --install {{ argocd_helm_release_name }} {{ argocd_helm_chart_version }}"
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install {{ argocd_helm_release_name }} {{ argocd_helm_chart }}
+      --version {{ argocd_helm_chart_version }}
+      --namespace {{ argocd_namespace }}
+      --values /etc/kubernetes/argocd-values.yaml
+      --wait
+      --timeout 10m
+      --kubeconfig {{ argocd_kubeconfig }}
+  register: _helm_out
+  when: _argocd_install_needed | bool
+  changed_when: true
+  no_log: true   # values 가 stdout 에 echo 될 가능성 차단
+
+- name: "helm | Report install/upgrade result"
+  ansible.builtin.debug:
+    msg: "argocd helm release {{ 'updated' if _argocd_install_needed else 'already up-to-date (no change)' }}"
+
+# ------------------------------------------------------------
+# 6. ArgoCD CRD 등록 확인
+# ------------------------------------------------------------
+- name: "helm | Wait for ArgoCD CRDs to be Established"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ argocd_kubeconfig }}
+      wait --for=condition=Established
+      crd/{{ item }}.argoproj.io
+      --timeout=60s
+  loop:
+    - applications
+    - applicationsets
+    - appprojects
+  changed_when: false

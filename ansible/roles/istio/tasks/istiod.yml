@@ -1,0 +1,115 @@
+---
+# ============================================================
+# istio/tasks/istiod.yml — sub-task 2
+# ============================================================
+# 대상: k8s-master-01
+# istio/istiod chart 설치 (control plane / Pilot).
+# 사전조건: base sub-task 완료 (CRDs 등록).
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. values.yaml 렌더
+# ------------------------------------------------------------
+- name: "istiod | Render values.yaml"
+  ansible.builtin.template:
+    src: values/istiod.yaml.j2
+    dest: /etc/kubernetes/istio-istiod-values.yaml
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+
+# ------------------------------------------------------------
+# 2. 멱등성 판정
+# ------------------------------------------------------------
+- name: "istiod | Check current release status"
+  ansible.builtin.command:
+    cmd: >
+      helm status {{ istio_istiod_release_name }}
+      --namespace {{ istio_namespace }}
+      --kubeconfig {{ istio_kubeconfig }}
+      -o json
+  register: _istiod_status
+  changed_when: false
+  failed_when: false
+
+- name: "istiod | Get current values (if release exists)"
+  ansible.builtin.command:
+    cmd: >
+      helm get values {{ istio_istiod_release_name }}
+      --namespace {{ istio_namespace }}
+      --kubeconfig {{ istio_kubeconfig }}
+      -o yaml
+  register: _istiod_cur_values
+  changed_when: false
+  failed_when: false
+  when: _istiod_status.rc == 0
+
+- name: "istiod | Read rendered values file"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/istio-istiod-values.yaml
+  register: _istiod_rendered
+
+- name: "istiod | Decide if install/upgrade is needed"
+  ansible.builtin.set_fact:
+    _istiod_install_needed: >-
+      {{
+        _istiod_status.rc != 0
+        or (_istiod_cur_values.stdout | default('') | from_yaml | default({}))
+           != (_istiod_rendered.content | b64decode | from_yaml)
+      }}
+
+# ------------------------------------------------------------
+# 3. helm install (or upgrade)
+# ------------------------------------------------------------
+- name: "istiod | helm upgrade --install {{ istio_istiod_release_name }} {{ istio_chart_version }}"
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install {{ istio_istiod_release_name }} {{ istio_istiod_chart }}
+      --version {{ istio_chart_version }}
+      --namespace {{ istio_namespace }}
+      --values /etc/kubernetes/istio-istiod-values.yaml
+      --wait
+      --timeout 10m
+      --kubeconfig {{ istio_kubeconfig }}
+  register: _helm_out
+  when: _istiod_install_needed | bool
+  changed_when: true
+
+- name: "istiod | Show helm output (last 20 lines)"
+  ansible.builtin.debug:
+    msg: "{{ _helm_out.stdout_lines[-20:] }}"
+  when:
+    - _istiod_install_needed | bool
+    - _helm_out.stdout_lines is defined
+
+# ------------------------------------------------------------
+# 4. istiod Deployment Ready 확인 (다음 sub-task 사전조건)
+# ------------------------------------------------------------
+- name: "istiod | Wait for istiod Deployment Available"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ istio_kubeconfig }}
+      -n {{ istio_namespace }}
+      wait --for=condition=Available deployment/istiod
+      --timeout={{ istio_wait_timeout }}
+  changed_when: false
+
+# ------------------------------------------------------------
+# 5. istiod webhook (validating/mutating) 등록 확인
+# ------------------------------------------------------------
+# Gateway/VirtualService apply 시 istiod webhook 이 검증함 → ingress chart 깔리기
+# 전에 webhook 이 준비되어 있어야 안 깨짐
+- name: "istiod | Wait for istiod validating webhook"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ istio_kubeconfig }} \
+      get validatingwebhookconfiguration istiod-default-validator -o name 2>&1 \
+    | head -1
+  args:
+    executable: /bin/bash
+  register: _vw
+  changed_when: false
+  failed_when: "'validatingwebhookconfiguration' not in _vw.stdout"
+  retries: 10
+  delay: 6
+  until: "'validatingwebhookconfiguration' in _vw.stdout"

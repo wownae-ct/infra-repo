@@ -1,0 +1,56 @@
+---
+# ============================================================
+# roles/k8s/tasks/join_worker.yml — sub-task 7
+# ============================================================
+# 대상: k8s_workers (3대)
+# 호출: include_role: { name: k8s } vars: { k8s_sub_task: join_worker }
+#
+# 사전 조건:
+#   - master-01 hostvars 에 k8s_join_command_worker 가 set_fact 됨.
+#
+# 멱등성:
+#   - /etc/kubernetes/kubelet.conf 가 이미 있으면 skip.
+# ============================================================
+
+- name: "join_worker | Check if already joined"
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: _kubelet_conf
+
+- name: "join_worker | Skip — already joined"
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} already joined; kubelet.conf exists."
+  when: _kubelet_conf.stat.exists
+
+- name: "join_worker | Resolve bootstrap host (first master)"
+  ansible.builtin.set_fact:
+    _bootstrap_host: "{{ groups['k8s_masters'][0] }}"
+
+- name: "join_worker | Resolve join command from bootstrap host's hostvars"
+  ansible.builtin.set_fact:
+    _join_worker_cmd: "{{ hostvars[_bootstrap_host]['k8s_join_command_worker'] | default('') | trim }}"
+
+- name: "join_worker | Assert join command was retrieved"
+  ansible.builtin.assert:
+    that:
+      - _join_worker_cmd | length > 0
+      - "'kubeadm join' in _join_worker_cmd"
+    fail_msg: >-
+      Could not retrieve worker join command from {{ _bootstrap_host }}.
+      Did bootstrap (or token refresh) run in the same ansible-playbook call?
+    quiet: true
+  when: not _kubelet_conf.stat.exists
+
+- name: "join_worker | kubeadm join (worker)"
+  ansible.builtin.command:
+    cmd: "{{ _join_worker_cmd }}"
+  register: _wjoin
+  when: not _kubelet_conf.stat.exists
+  changed_when: true
+
+- name: "join_worker | Show join output (last 20 lines)"
+  ansible.builtin.debug:
+    msg: "{{ _wjoin.stdout_lines[-20:] }}"
+  when:
+    - not _kubelet_conf.stat.exists
+    - _wjoin.stdout_lines is defined

@@ -1,0 +1,28 @@
+# /etc/samba/smb.conf - managed by Ansible (storage role)
+# 백업 (smb-testparm.txt) 그대로 재현.
+
+[global]
+    workgroup = {{ storage_smb_workgroup }}
+    server role = {{ storage_smb_server_role }}
+    security = {{ storage_smb_security }}
+    server min protocol = {{ storage_smb_min_protocol }}
+    smb ports = {{ storage_smb_ports }}
+    log file = {{ storage_smb_log_file }}
+    max log size = {{ storage_smb_max_log_size }}
+
+[share]
+    path = {{ storage_smb_share_path }}
+    valid users = {{ storage_smb_share_valid_users }}
+    read only = no
+    browseable = yes
+    create mask = {{ storage_smb_share_create_mask }}
+    directory mask = {{ storage_smb_share_directory_mask }}
+    force group = {{ storage_smb_share_force_group }}
+
+[homes]
+    path = {{ storage_smb_homes_path }}
+    read only = no
+    browseable = yes
+    create mask = {{ storage_smb_homes_create_mask }}
+    directory mask = {{ storage_smb_homes_directory_mask }}
+    valid users = %S

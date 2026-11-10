@@ -1,0 +1,188 @@
+---
+# ============================================================
+# storage role - lvm sub-task
+# ============================================================
+# 백업 (lsblk/vgdisplay/lvdisplay) 그대로 재현.
+#
+# 구성:
+#   vg_s3 (sdc+sdd+sdf+sdh, 40G)  → lv_minio → /data/minio (xfs)
+#   vg_nfs (sde, 30G)             → lv_nfs   → /data/nfs   (xfs)
+#   vg_smb (sdg, 30G)             → lv_smb   → /data/smb   (xfs)
+#
+# WARNING:
+#   - 새 VM 첫 적용 시점에만 의미가 있음.
+#   - cutover 후 운영 중 storage 에는 재실행 금지 → storage_lvm_enabled: false.
+#   - filesystem 모듈은 force=false (기본값) → 이미 fs 있으면 건드리지 않음 (안전).
+#   - lvg/lvol 도 idempotent → 같은 구성이면 changed 안 됨.
+#
+# 의존성:
+#   - packages.yml 먼저 (lvm2, xfsprogs 설치).
+# ============================================================
+
+- name: LVM 작업 skip (storage_lvm_enabled=false)
+  ansible.builtin.debug:
+    msg: "storage_lvm_enabled=false → LVM 작업 전체 skip (cutover 후 운영 중 안전장치)"
+  when: not (storage_lvm_enabled | bool)
+  tags: [storage, lvm]
+
+# ---------- 디스크 존재 검증 (안전장치) ----------
+# 변수에 박힌 PV 디바이스가 실제로 있는지 먼저 확인.
+# 없으면 lvg 가 알 수 없는 에러 던지기 전에 명시적으로 실패.
+
+- name: Verify - PV 디바이스 존재 확인
+  ansible.builtin.stat:
+    path: "{{ item.1 }}"
+  loop: "{{ storage_lvm_vgs | subelements('pvs') }}"
+  loop_control:
+    label: "{{ item.0.name }} → {{ item.1 }}"
+  register: pv_stat
+  failed_when: not pv_stat.stat.exists
+  when: storage_lvm_enabled | bool
+  tags: [storage, lvm, verify]
+
+# ---------- VG 생성 ----------
+# lvg 는 idempotent: 같은 VG 가 같은 PV 로 이미 있으면 changed 안 됨.
+# 다른 PV 가 섞여 있으면 force=false (기본값) 때문에 에러 → 의도된 안전장치.
+
+- name: Ensure Volume Groups
+  community.general.lvg:
+    vg: "{{ item.name }}"
+    pvs: "{{ item.pvs | join(',') }}"
+    state: present
+  become: true
+  loop: "{{ storage_lvm_vgs }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.pvs | join('+') }})"
+  when: storage_lvm_enabled | bool
+  tags: [storage, lvm, vg]
+
+# ---------- LV 생성 ----------
+# size: 100%FREE → 해당 VG 의 남은 공간 전부 사용.
+# lvol 도 idempotent: 같은 크기로 이미 있으면 changed 안 됨.
+
+- name: Ensure Logical Volumes
+  community.general.lvol:
+    vg: "{{ item.vg }}"
+    lv: "{{ item.lv }}"
+    size: "{{ item.size }}"
+    state: present
+  become: true
+  loop: "{{ storage_lvm_lvs }}"
+  loop_control:
+    label: "{{ item.vg }}/{{ item.lv }} ({{ item.size }})"
+  when: storage_lvm_enabled | bool
+  tags: [storage, lvm, lv]
+
+# ---------- 파일시스템 생성 ----------
+# force=false (기본값): 이미 fs 가 있으면 안 만짐 (데이터 안전).
+# 새 LV 에만 mkfs.xfs 실행.
+
+- name: Ensure XFS filesystem on LV
+  community.general.filesystem:
+    fstype: "{{ item.fs }}"
+    dev: "/dev/{{ item.vg }}/{{ item.lv }}"
+    force: false
+  become: true
+  loop: "{{ storage_lvm_lvs }}"
+  loop_control:
+    label: "/dev/{{ item.vg }}/{{ item.lv }} ({{ item.fs }})"
+  when: storage_lvm_enabled | bool
+  tags: [storage, lvm, fs]
+
+# ---------- 마운트 포인트 ----------
+
+- name: Ensure mount points exist
+  ansible.builtin.file:
+    path: "{{ item.mount }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  loop: "{{ storage_lvm_lvs }}"
+  loop_control:
+    label: "{{ item.mount }}"
+  when: storage_lvm_enabled | bool
+  tags: [storage, lvm, mount]
+
+# ---------- fstab + mount ----------
+# state=mounted: fstab 에 등록 + 즉시 마운트.
+# 이미 마운트되어 있고 fstab 도 동일하면 changed 안 됨.
+
+- name: Ensure LV mounted (fstab + mount)
+  ansible.posix.mount:
+    path: "{{ item.mount }}"
+    src: "/dev/{{ item.vg }}/{{ item.lv }}"
+    fstype: "{{ item.fs }}"
+    opts: defaults
+    state: mounted
+  become: true
+  loop: "{{ storage_lvm_lvs }}"
+  loop_control:
+    label: "{{ item.mount }} ← /dev/{{ item.vg }}/{{ item.lv }}"
+  when: storage_lvm_enabled | bool
+  tags: [storage, lvm, mount]
+
+# ---------- 검증 ----------
+
+- name: Verify - VG 존재
+  ansible.builtin.command: "vgs --noheadings -o vg_name {{ item.name }}"
+  become: true
+  loop: "{{ storage_lvm_vgs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: vg_check
+  changed_when: false
+  failed_when: item.name not in vg_check.stdout
+  when:
+    - not ansible_check_mode
+    - storage_lvm_enabled | bool
+  tags: [storage, lvm, verify]
+
+- name: Verify - LV 존재
+  ansible.builtin.command: "lvs --noheadings -o lv_name {{ item.vg }}/{{ item.lv }}"
+  become: true
+  loop: "{{ storage_lvm_lvs }}"
+  loop_control:
+    label: "{{ item.vg }}/{{ item.lv }}"
+  register: lv_check
+  changed_when: false
+  failed_when: item.lv not in lv_check.stdout
+  when:
+    - not ansible_check_mode
+    - storage_lvm_enabled | bool
+  tags: [storage, lvm, verify]
+
+- name: Verify - 마운트 활성
+  ansible.builtin.shell: |
+    findmnt -n -o SOURCE {{ item.mount }} | grep -q "{{ item.vg }}-{{ item.lv }}"
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ storage_lvm_lvs }}"
+  loop_control:
+    label: "{{ item.mount }}"
+  register: mount_check
+  changed_when: false
+  failed_when: mount_check.rc != 0
+  when:
+    - not ansible_check_mode
+    - storage_lvm_enabled | bool
+  tags: [storage, lvm, verify]
+
+- name: Verify - 파일시스템 xfs
+  ansible.builtin.shell: |
+    findmnt -n -o FSTYPE {{ item.mount }} | grep -q "{{ item.fs }}"
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ storage_lvm_lvs }}"
+  loop_control:
+    label: "{{ item.mount }} ({{ item.fs }})"
+  register: fs_check
+  changed_when: false
+  failed_when: fs_check.rc != 0
+  when:
+    - not ansible_check_mode
+    - storage_lvm_enabled | bool
+  tags: [storage, lvm, verify]

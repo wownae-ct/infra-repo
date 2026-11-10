@@ -1,0 +1,102 @@
+---
+# ============================================================
+# bastion role - ssh sub-task
+# ============================================================
+# sshd_config.d drop-in 파일로 보안 정책 박는다.
+# 메인 sshd_config 는 안 건드림 (Ubuntu 기본이 이미 drop-in include).
+#
+# 단계적 적용 (안전):
+#   - bastion_ssh_keep_port_22=true   → 22 도 함께 LISTEN (검증용)
+#   - bastion_ssh_keep_port_22=false  → 22 닫음 (검증 후)
+#
+# 잘못된 sshd 설정으로 SSH 끊기는 사고 방지:
+#   - validate 옵션으로 sshd -t 검사 후 배포
+#   - drop-in 방식이라 실패해도 메인 sshd_config 는 안전
+#
+# Ubuntu 22.04+ socket-activation 비활성화 필수:
+#   - ssh.socket 이 포트 22 만 잡으면 drop-in 의 Port 8282 가 안 먹힘
+#   - socket 끄고 ssh.service 가 직접 listen 하게 만든다
+# ============================================================
+
+- name: Render sshd drop-in (00-bastion.conf)
+  ansible.builtin.template:
+    src: ssh/00-bastion.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-bastion.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+    validate: "sshd -t -f %s"
+  become: true
+  notify: restart sshd
+  tags: [bastion, ssh, config]
+
+- name: Disable ssh.socket (socket-activation 비활성화)
+  ansible.builtin.systemd:
+    name: ssh.socket
+    enabled: false
+    state: stopped
+  become: true
+  when: not ansible_check_mode
+  notify: restart sshd
+  tags: [bastion, ssh, config]
+
+- name: Ensure ssh.service enabled (for boot autostart)
+  ansible.builtin.systemd:
+    name: ssh.service
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [bastion, ssh, config]
+
+# Handler 즉시 실행 (verify task 가 새 포트 보게 하려면 sshd 재시작 후여야 함)
+- name: Flush handlers (sshd 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [bastion, ssh]
+
+
+# ---------- 검증 ----------
+
+- name: Verify - sshd config syntax
+  ansible.builtin.command: sshd -t
+  become: true
+  changed_when: false
+  when: not ansible_check_mode
+  tags: [bastion, ssh, verify]
+
+- name: Verify - sshd service running
+  ansible.builtin.systemd:
+    name: ssh
+    state: started
+  register: sshd_running
+  changed_when: false
+  become: true
+  when: not ansible_check_mode
+  tags: [bastion, ssh, verify]
+
+- name: Verify - sshd listening on configured port
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":{{ bastion_ssh_port }}\s" || exit 1
+  become: true
+  changed_when: false
+  when: not ansible_check_mode
+  tags: [bastion, ssh, verify]
+
+- name: Verify - SSH connection works on configured port
+  ansible.builtin.command: >
+    ssh -i {{ ansible_ssh_private_key_file }}
+        -p {{ bastion_ssh_port }}
+        -o StrictHostKeyChecking=no
+        -o ConnectTimeout=5
+        -o BatchMode=yes
+        {{ ansible_user }}@{{ ansible_host }} 'echo ok'
+  delegate_to: localhost
+  become: false
+  register: ssh_test
+  changed_when: false
+  failed_when:
+    - ssh_test.rc != 0
+    - "'ok' not in ssh_test.stdout"
+  when: not ansible_check_mode
+  tags: [bastion, ssh, verify]

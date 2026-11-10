@@ -1,0 +1,18 @@
+---
+# ============================================================
+# common role - handlers
+# ============================================================
+
+- name: restart chronyd
+  ansible.builtin.systemd:
+    name: "{{ 'chrony' if ansible_os_family == 'Debian' else 'chronyd' }}"
+    state: restarted
+  when: not ansible_check_mode
+
+- name: restart systemd-resolved
+  ansible.builtin.systemd:
+    name: systemd-resolved
+    state: restarted
+  when:
+    - not ansible_check_mode
+    - ansible_os_family == "Debian"

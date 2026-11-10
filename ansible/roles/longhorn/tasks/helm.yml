@@ -1,0 +1,113 @@
+---
+# ============================================================
+# longhorn/tasks/helm.yml — sub-task 2
+# ============================================================
+# 대상: k8s-master-01
+# Longhorn chart 1.11.0 helm install.
+# ============================================================
+
+- name: "helm | Ensure namespace {{ longhorn_namespace }} exists"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      create namespace {{ longhorn_namespace }} \
+      --dry-run=client -o yaml | \
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} apply -f -
+  args:
+    executable: /bin/bash
+  register: _ns_apply
+  changed_when: "'created' in _ns_apply.stdout"
+
+- name: "helm | Add longhorn repo"
+  ansible.builtin.command:
+    cmd: "helm repo add {{ longhorn_helm_repo_name }} {{ longhorn_helm_repo_url }}"
+  register: _repo_add
+  changed_when: "'has been added' in _repo_add.stdout"
+  failed_when:
+    - _repo_add.rc != 0
+    - "'already exists' not in _repo_add.stderr"
+
+- name: "helm | Update repo"
+  ansible.builtin.command:
+    cmd: "helm repo update {{ longhorn_helm_repo_name }}"
+  changed_when: false
+
+- name: "helm | Render values.yaml"
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: /etc/kubernetes/longhorn-values.yaml
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+
+- name: "helm | Check current release status"
+  ansible.builtin.command:
+    cmd: >
+      helm status {{ longhorn_helm_release_name }}
+      --namespace {{ longhorn_namespace }}
+      --kubeconfig {{ longhorn_kubeconfig }}
+      -o json
+  register: _lh_status
+  changed_when: false
+  failed_when: false
+
+- name: "helm | Get current values (if release exists)"
+  ansible.builtin.command:
+    cmd: >
+      helm get values {{ longhorn_helm_release_name }}
+      --namespace {{ longhorn_namespace }}
+      --kubeconfig {{ longhorn_kubeconfig }}
+      -o yaml
+  register: _lh_cur_values
+  changed_when: false
+  failed_when: false
+  when: _lh_status.rc == 0
+
+- name: "helm | Read rendered values file"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/longhorn-values.yaml
+  register: _lh_rendered
+
+- name: "helm | Decide if install/upgrade is needed"
+  ansible.builtin.set_fact:
+    _lh_install_needed: >-
+      {{
+        _lh_status.rc != 0
+        or (_lh_cur_values.stdout | default('') | from_yaml | default({}))
+           != (_lh_rendered.content | b64decode | from_yaml)
+      }}
+
+- name: "helm | helm upgrade --install {{ longhorn_helm_release_name }} {{ longhorn_helm_chart_version }}"
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install {{ longhorn_helm_release_name }} {{ longhorn_helm_chart }}
+      --version {{ longhorn_helm_chart_version }}
+      --namespace {{ longhorn_namespace }}
+      --values /etc/kubernetes/longhorn-values.yaml
+      --wait
+      --timeout 15m
+      --kubeconfig {{ longhorn_kubeconfig }}
+  register: _helm_out
+  when: _lh_install_needed | bool
+  changed_when: true
+
+- name: "helm | Show helm output (last 20 lines)"
+  ansible.builtin.debug:
+    msg: "{{ _helm_out.stdout_lines[-20:] }}"
+  when:
+    - _lh_install_needed | bool
+    - _helm_out.stdout_lines is defined
+
+# CRD 가 등록되어야 다음 sub-task (disks/backup) 진행 가능
+- name: "helm | Wait for Longhorn CRDs"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ longhorn_kubeconfig }}
+      wait --for=condition=Established
+      crd/{{ item }}.longhorn.io
+      --timeout=60s
+  loop:
+    - nodes
+    - settings
+    - recurringjobs
+  changed_when: false

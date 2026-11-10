@@ -1,0 +1,75 @@
+---
+# ============================================================
+# coredns/tasks/verify.yml — sub-task 2
+# ============================================================
+# 대상: k8s-master-01
+#
+# 흐름:
+#   1. busybox Pod 띄움 (default namespace)
+#   2. 각 도메인 nslookup → 기대 IP 와 일치하는지 단언
+#   3. Pod 삭제
+# ============================================================
+
+- name: "verify | Create busybox verify Pod"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ coredns_kubeconfig }} \
+      -n {{ coredns_verify_pod_namespace }} \
+      run {{ coredns_verify_pod_name }} \
+        --image={{ coredns_verify_pod_image }} \
+        --restart=Never \
+        --command -- sleep 300
+  args:
+    executable: /bin/bash
+  register: _pod_create
+  changed_when: false
+  failed_when:
+    - _pod_create.rc != 0
+    - "'AlreadyExists' not in _pod_create.stderr"
+
+- name: "verify | Wait for verify Pod Ready"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ coredns_kubeconfig }}
+      -n {{ coredns_verify_pod_namespace }}
+      wait --for=condition=Ready pod/{{ coredns_verify_pod_name }}
+      --timeout=60s
+  changed_when: false
+
+- name: "verify | nslookup each domain inside Pod"
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl --kubeconfig={{ coredns_kubeconfig }} \
+      -n {{ coredns_verify_pod_namespace }} \
+      exec {{ coredns_verify_pod_name }} -- \
+      nslookup {{ item.domain }} \
+    | awk '/^Address: / {print $2; exit}'
+  args:
+    executable: /bin/bash
+  loop: "{{ coredns_verify_domains }}"
+  loop_control:
+    label: "{{ item.domain }} → expect {{ item.expect }}"
+  register: _v_nslookup
+  changed_when: false
+  failed_when: _v_nslookup.stdout | trim != item.expect
+
+- name: "verify | Report resolved addresses"
+  ansible.builtin.debug:
+    msg: "{{ item.item.domain }} → {{ item.stdout }}  (expect {{ item.item.expect }}) OK"
+  loop: "{{ _v_nslookup.results }}"
+  loop_control:
+    label: "{{ item.item.domain }}"
+
+- name: "verify | Cleanup — delete verify Pod"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ coredns_kubeconfig }}
+      -n {{ coredns_verify_pod_namespace }}
+      delete pod {{ coredns_verify_pod_name }}
+      --grace-period=0 --force --ignore-not-found
+  changed_when: false
+
+- name: "verify | Final report"
+  ansible.builtin.debug:
+    msg:
+      - "Domains tested : {{ coredns_verify_domains | length }}개"
+      - "Resolution     : 모두 기대 IP 와 일치 OK"

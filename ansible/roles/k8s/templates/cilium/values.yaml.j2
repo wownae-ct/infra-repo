@@ -1,0 +1,61 @@
+# {{ ansible_managed }}
+# Cilium {{ k8s_cilium_version }} helm values
+#
+# 핵심:
+#   - kubeProxyReplacement=true → kube-proxy 완전 대체 (kubeadm init 에서
+#     --skip-phases=addon/kube-proxy 했으므로 필수)
+#   - k8sServiceHost=VIP, k8sServicePort=8443 → API 접근은 HAProxy 경유
+#   - IPAM cluster-pool, PodCIDR {{ k8s_pod_subnet }}
+#   - Hubble (relay + ui) 활성화
+
+kubeProxyReplacement: true
+k8sServiceHost: "{{ k8s_vip }}"
+k8sServicePort: {{ k8s_haproxy_frontend_port }}
+
+# IPAM — cluster-pool 모드. operator 가 노드마다 /24 분할 할당.
+ipam:
+  mode: cluster-pool
+  operator:
+    clusterPoolIPv4PodCIDRList:
+      - "{{ k8s_pod_subnet }}"
+    clusterPoolIPv4MaskSize: 24
+
+# 터널링 (VXLAN). 노드 간 underlay 라우팅이 불필요 (Hyper-V/일반 L2 환경 안전).
+routingMode: tunnel
+tunnelProtocol: vxlan
+
+# Operator
+operator:
+  replicas: 2
+  rollOutPods: true
+  prometheus:
+    enabled: true
+
+# Hubble — 네트워크 가시성
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+    rollOutPods: true
+  ui:
+    enabled: true
+    rollOutPods: true
+  metrics:
+    enabled:
+      - dns:query;ignoreAAAA
+      - drop
+      - tcp
+      - flow
+      - icmp
+      - http
+
+# Prometheus 메트릭 (kube-prometheus-stack 이 나중에 ServiceMonitor 로 수집).
+# ServiceMonitor CRD 가 아직 없으므로 chart 의 ServiceMonitor 생성은 disable.
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+
+# bpf masquerade — egress 시 pod IP → node IP 변환
+bpf:
+  masquerade: true

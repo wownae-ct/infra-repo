@@ -1,0 +1,53 @@
+---
+# ============================================================
+# bastion role - main orchestration
+# ============================================================
+# bastion 의 모든 sub-task 를 순서대로 실행.
+# 각 sub-task 는 별도 파일로 분리, 여기서 import.
+#
+# 부분 적용:
+#   ansible-playbook ... --tags iptables
+#   ansible-playbook ... --tags bind9
+#
+# 적용 순서 (의존성 고려):
+#   1. iptables - NAT (다른 VM 의 외부 통신)
+#   2. bind9    - 내부 DNS 서버
+#   (추후): ssh, chrony, nginx, wireguard, openvpn, knockd,
+#          certbot, noip, promtail
+# ============================================================
+
+- name: iptables NAT 설정
+  ansible.builtin.import_tasks: iptables.yml
+  tags: [bastion, iptables]
+
+- name: ssh 보안 (sshd_config drop-in)
+  ansible.builtin.import_tasks: ssh.yml
+  tags: [bastion, ssh]
+
+- name: bind9 내부 DNS 서버
+  ansible.builtin.import_tasks: bind9.yml
+  tags: [bastion, bind9]
+
+- name: chrony NTP 서버 설정
+  ansible.builtin.import_tasks: chrony.yml
+  tags: [bastion, chrony]
+
+- name: knockd port knocking (SSH 보호)
+  ansible.builtin.import_tasks: knockd.yml
+  tags: [bastion, knockd]
+
+- name: wireguard (AWS EC2 터널)
+  ansible.builtin.import_tasks: wireguard.yml
+  tags: [bastion, wireguard]
+
+- name: openvpn (외부 → 내부망 VPN 서버)
+  ansible.builtin.import_tasks: openvpn.yml
+  tags: [bastion, openvpn]
+
+- name: certbot (Let's Encrypt 인증서)
+  ansible.builtin.import_tasks: certbot.yml
+  tags: [bastion, certbot]
+
+- name: nginx (reverse proxy + TLS)
+  ansible.builtin.import_tasks: nginx.yml
+  tags: [bastion, nginx]

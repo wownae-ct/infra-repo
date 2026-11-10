@@ -1,0 +1,31 @@
+# /etc/systemd/system/minio.service - managed by Ansible (storage role)
+# MinIO single-node single-drive systemd unit.
+
+[Unit]
+Description=MinIO
+Documentation=https://min.io/docs/minio/linux/index.html
+Wants=network-online.target
+After=network-online.target
+AssertFileIsExecutable={{ storage_minio_binary_path }}
+AssertFileNotEmpty={{ storage_minio_config_env }}
+
+[Service]
+Type=notify
+WorkingDirectory=/usr/local
+User={{ storage_minio_user }}
+Group={{ storage_minio_group }}
+ProtectProc=invisible
+
+EnvironmentFile={{ storage_minio_config_env }}
+ExecStartPre=/bin/bash -c "if [ -z \"${MINIO_VOLUMES}\" ]; then echo \"Variable MINIO_VOLUMES not set in {{ storage_minio_config_env }}\"; exit 1; fi"
+ExecStart={{ storage_minio_binary_path }} server $MINIO_OPTS $MINIO_VOLUMES
+
+# 종료/재시작
+Restart=always
+LimitNOFILE=1048576
+TasksMax=infinity
+TimeoutStopSec=infinity
+SendSIGKILL=no
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,182 @@
+# {{ ansible_managed }}
+# /etc/promtail/config.yml — bastion 서버
+#
+# 수집 대상:
+#   1. nginx (access + error)
+#   2. openvpn@server.service (journal)
+#   3. wg-quick@wg0.service  (journal)
+#   4. named.service / bind9 query log (journal + file)
+#   5. chrony.service (journal)
+#   6. system logs (syslog, auth.log, kern.log)
+#   7. SSH 무차별 공격 탐지 (auth.log pipeline)
+#   8. UFW/iptables 방화벽 로그 (kern.log pipeline)
+
+server:
+  http_listen_port: {{ promtail_http_port_bastion }}
+  grpc_listen_port: 0
+
+positions:
+  filename: {{ promtail_positions_dir }}/positions-bastion.yaml
+
+clients:
+  - url: {{ promtail_loki_push_url }}
+    tenant_id: {{ promtail_loki_tenant_id }}
+
+scrape_configs:
+  # ──────────────────────────────────────
+  # 1. Nginx
+  # ──────────────────────────────────────
+  - job_name: nginx-access
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: nginx
+          host: {{ ansible_hostname }}
+          __path__: /var/log/nginx/access.log
+    pipeline_stages:
+      - regex:
+          expression: '^(?P<remote_addr>\S+) .* "(?P<method>\S+) (?P<uri>\S+) \S+" (?P<status>\d+) (?P<bytes_sent>\d+)'
+      - labels:
+          status:
+          method:
+
+  - job_name: nginx-error
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: nginx
+          level: error
+          host: {{ ansible_hostname }}
+          __path__: /var/log/nginx/error.log
+
+  # ──────────────────────────────────────
+  # 2. OpenVPN (journal)
+  # ──────────────────────────────────────
+  - job_name: openvpn
+    journal:
+      labels:
+        job: openvpn
+        host: {{ ansible_hostname }}
+      matches: _SYSTEMD_UNIT=openvpn@server.service
+    relabel_configs:
+      - source_labels: ['__journal_priority_keyword']
+        target_label: level
+
+  # ──────────────────────────────────────
+  # 3. WireGuard (journal)
+  # ──────────────────────────────────────
+  - job_name: wireguard
+    journal:
+      labels:
+        job: wireguard
+        host: {{ ansible_hostname }}
+      matches: _SYSTEMD_UNIT=wg-quick@wg0.service
+    relabel_configs:
+      - source_labels: ['__journal_priority_keyword']
+        target_label: level
+
+  # ──────────────────────────────────────
+  # 4. DNS — bind9 (journal + query log)
+  # ──────────────────────────────────────
+  - job_name: bind9
+    journal:
+      labels:
+        job: dns
+        host: {{ ansible_hostname }}
+      matches: _SYSTEMD_UNIT=named.service
+    relabel_configs:
+      - source_labels: ['__journal_priority_keyword']
+        target_label: level
+
+  # bind9 query log (logging channel 설정 시에만 파일 생성됨)
+  - job_name: bind9-querylog
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: dns-query
+          host: {{ ansible_hostname }}
+          __path__: /var/log/named/query.log
+    pipeline_stages:
+      - regex:
+          expression: 'client @\S+ (?P<client_ip>\S+)#\d+.*query: (?P<query_name>\S+) (?P<query_class>\S+) (?P<query_type>\S+)'
+      - labels:
+          query_type:
+
+  # ──────────────────────────────────────
+  # 5. NTP — chrony (journal)
+  # ──────────────────────────────────────
+  - job_name: chrony
+    journal:
+      labels:
+        job: ntp
+        host: {{ ansible_hostname }}
+      matches: _SYSTEMD_UNIT=chrony.service
+    relabel_configs:
+      - source_labels: ['__journal_priority_keyword']
+        target_label: level
+
+  # ──────────────────────────────────────
+  # 6. 시스템 로그 (Ubuntu: syslog, auth.log, kern.log)
+  # ──────────────────────────────────────
+  - job_name: system-logs
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: system
+          host: {{ ansible_hostname }}
+          __path__: /var/log/{syslog,auth.log,kern.log}
+
+  # ──────────────────────────────────────
+  # 7. SSH 무차별 공격 탐지 (auth.log)
+  # ──────────────────────────────────────
+  # 별도 job 으로 분리 — pipeline_stages 로 공격 패턴 파싱.
+  # Grafana 대시보드에서 src_ip / action 라벨로 필터 가능.
+  - job_name: ssh-auth
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: ssh
+          host: {{ ansible_hostname }}
+          __path__: /var/log/auth.log
+    pipeline_stages:
+      # SSH 실패 로그인 (Failed password, Invalid user, 연결 거부 등)
+      - match:
+          selector: '{job="ssh"}'
+          stages:
+            - regex:
+                expression: '(?P<action>Failed password|Invalid user|Connection closed by authenticating user|Unable to negotiate) .* from (?P<src_ip>\d+\.\d+\.\d+\.\d+)'
+            - labels:
+                action:
+                src_ip:
+      # SSH 성공 로그인
+      - match:
+          selector: '{job="ssh"}'
+          stages:
+            - regex:
+                expression: '(?P<action>Accepted (?:password|publickey)) for (?P<user>\S+) from (?P<src_ip>\d+\.\d+\.\d+\.\d+)'
+            - labels:
+                action:
+                user:
+                src_ip:
+
+  # ──────────────────────────────────────
+  # 8. 방화벽 로그 (iptables/knockd 관련)
+  # ──────────────────────────────────────
+  # kern.log 에서 iptables 마커가 포함된 라인만 파싱.
+  - job_name: firewall
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: firewall
+          host: {{ ansible_hostname }}
+          __path__: /var/log/kern.log
+    pipeline_stages:
+      - match:
+          selector: '{job="firewall"} |~ "\\[UFW|iptables|IN=|OUT="'
+          stages:
+            - regex:
+                expression: 'SRC=(?P<src_ip>\S+) DST=(?P<dst_ip>\S+) .* PROTO=(?P<protocol>\S+) .* DPT=(?P<dst_port>\d+)'
+            - labels:
+                src_ip:
+                dst_port:
+                protocol:

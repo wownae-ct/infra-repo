@@ -1,0 +1,37 @@
+---
+# ============================================================
+# roles/promtail/tasks/main.yml — sub-task router
+# ============================================================
+# 외부(playbook)에서 promtail_sub_task 변수를 지정해 진입.
+#
+# 호출 예시:
+#   - hosts: bastion
+#     tasks:
+#       - include_role: { name: promtail }
+#         vars:
+#           promtail_sub_task: install
+#           promtail_server_role: bastion
+#
+# Sub-task:
+#   install   : 패키지 + 바이너리 다운로드 + systemd 유닛
+#   configure : 서버별 config 템플릿 배포 (promtail_server_role 필수)
+#   verify    : 서비스 active + Loki push 응답 확인
+# ============================================================
+
+- name: "promtail | Assert promtail_sub_task is provided and valid"
+  ansible.builtin.assert:
+    that:
+      - promtail_sub_task is defined
+      - promtail_sub_task in _promtail_sub_tasks_allowed
+    fail_msg: >-
+      promtail_sub_task must be one of: {{ _promtail_sub_tasks_allowed | join(', ') }}
+      (got: {{ promtail_sub_task | default('UNDEFINED') }})
+    quiet: true
+  vars:
+    _promtail_sub_tasks_allowed:
+      - install
+      - configure
+      - verify
+
+- name: "promtail | Include sub-task → {{ promtail_sub_task }}"
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/{{ promtail_sub_task }}.yml"

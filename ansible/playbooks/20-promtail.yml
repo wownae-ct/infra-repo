@@ -1,0 +1,123 @@
+---
+# ============================================================
+# 18차: Promtail VM 서버 배포
+# ============================================================
+# VM 서버(bastion, storage, db) 에 promtail systemd agent 설치.
+# promtail → Loki → Grafana 로그 파이프라인.
+#
+# K8s DaemonSet 은 ArgoCD 가 관리 (infra-repo/apps/promtail/).
+#
+# 사전 조건:
+#   - Loki 가 ArgoCD 로 Synced 상태 (loki-0 Running)
+#   - bastion BIND9 에 loki.lab.internal 등록 완료
+#   - bastion nginx 에 loki internal vhost 등록 완료
+#
+# 사용:
+#   # 전체 적용
+#   ansible-playbook -i inventories/hyperv/hosts.ini playbooks/20-promtail.yml \
+#     --ask-vault-pass
+#
+#   # 특정 서버만
+#   --limit bastion
+#   --limit storage
+#   --limit db
+#
+#   # dry-run
+#   --check --diff
+# ============================================================
+
+# ============================================================
+# Play 1: bastion
+# ============================================================
+- name: "18차 Play 1 | Promtail on bastion"
+  hosts: bastion
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [promtail, promtail-bastion]
+
+  tasks:
+    - name: "bastion → install"
+      ansible.builtin.include_role:
+        name: promtail
+      vars:
+        promtail_sub_task: install
+        promtail_server_role: bastion
+
+    - name: "bastion → configure"
+      ansible.builtin.include_role:
+        name: promtail
+      vars:
+        promtail_sub_task: configure
+        promtail_server_role: bastion
+
+    - name: "bastion → verify"
+      ansible.builtin.include_role:
+        name: promtail
+      vars:
+        promtail_sub_task: verify
+        promtail_server_role: bastion
+
+# ============================================================
+# Play 2: storage
+# ============================================================
+- name: "18차 Play 2 | Promtail on storage"
+  hosts: storage
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [promtail, promtail-storage]
+
+  tasks:
+    - name: "storage → install"
+      ansible.builtin.include_role:
+        name: promtail
+      vars:
+        promtail_sub_task: install
+        promtail_server_role: storage
+
+    - name: "storage → configure"
+      ansible.builtin.include_role:
+        name: promtail
+      vars:
+        promtail_sub_task: configure
+        promtail_server_role: storage
+
+    - name: "storage → verify"
+      ansible.builtin.include_role:
+        name: promtail
+      vars:
+        promtail_sub_task: verify
+        promtail_server_role: storage
+
+# ============================================================
+# Play 3: db
+# ============================================================
+- name: "18차 Play 3 | Promtail on db"
+  hosts: db
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [promtail, promtail-db]
+
+  tasks:
+    - name: "db → install"
+      ansible.builtin.include_role:
+        name: promtail
+      vars:
+        promtail_sub_task: install
+        promtail_server_role: db
+
+    - name: "db → configure"
+      ansible.builtin.include_role:
+        name: promtail
+      vars:
+        promtail_sub_task: configure
+        promtail_server_role: db
+
+    - name: "db → verify"
+      ansible.builtin.include_role:
+        name: promtail
+      vars:
+        promtail_sub_task: verify
+        promtail_server_role: db

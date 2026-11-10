@@ -1,0 +1,40 @@
+---
+# ============================================================
+# roles/sealed-secrets/tasks/main.yml — sub-task router
+# ============================================================
+# k8s role 과 동일 패턴.
+# 외부 playbook 에서 ss_sub_task 변수를 지정해 진입.
+#
+# 호출 예:
+#   - hosts: k8s-master-01
+#     tasks:
+#       - include_role: { name: sealed-secrets }
+#         vars: { ss_sub_task: restore_key }
+#       - include_role: { name: sealed-secrets }
+#         vars: { ss_sub_task: helm }
+#       - include_role: { name: sealed-secrets }
+#         vars: { ss_sub_task: verify }
+#
+# Sub-task:
+#   restore_key  : 백업 sealing key 2개 apply (controller 설치 전 필수)
+#   helm         : sealed-secrets chart helm install
+#   verify       : controller Ready + 기존 키 인식 + 해독 테스트
+# ============================================================
+
+- name: "sealed-secrets | Assert ss_sub_task is provided and valid"
+  ansible.builtin.assert:
+    that:
+      - ss_sub_task is defined
+      - ss_sub_task in _ss_sub_tasks_allowed
+    fail_msg: >-
+      ss_sub_task must be one of: {{ _ss_sub_tasks_allowed | join(', ') }}
+      (got: {{ ss_sub_task | default('UNDEFINED') }})
+    quiet: true
+  vars:
+    _ss_sub_tasks_allowed:
+      - restore_key
+      - helm
+      - verify
+
+- name: "sealed-secrets | Include sub-task → {{ ss_sub_task }}"
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/{{ ss_sub_task }}.yml"

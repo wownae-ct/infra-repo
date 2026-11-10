@@ -1,0 +1,10 @@
+# /etc/default/knockd - managed by Ansible (bastion role)
+# Debian/Ubuntu 의 knockd init 옵션.
+
+# control if we start knockd at init or not
+# 1 = start
+# anything else = don't start
+START_KNOCKD=1
+
+# command line options
+KNOCKD_OPTS="-i {{ bastion_knockd_interface }} -c /etc/knockd.conf -D"

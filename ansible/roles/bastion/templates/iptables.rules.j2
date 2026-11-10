@@ -1,0 +1,88 @@
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD {{ bastion_iptables_forward_policy }} [0:0]
+:OUTPUT ACCEPT [0:0]
+
+# INPUT — 10.99.2.191 (호스트) SSH
+-A INPUT -s 10.99.2.191 -p tcp --dport {{ bastion_ssh_port }} -j ACCEPT
+
+# INPUT — RELATED,ESTABLISHED
+-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+# INPUT — loopback
+-A INPUT -i lo -j ACCEPT
+
+# INPUT — DNS
+-A INPUT -p udp --dport 53 -j ACCEPT
+-A INPUT -p tcp --dport 53 -j ACCEPT
+
+# INPUT — NTP
+-A INPUT -p udp --dport 123 -j ACCEPT
+-A INPUT -p tcp --dport 123 -j ACCEPT
+
+# INPUT — HTTP
+-A INPUT -p tcp -s {{ bastion_iptables_allowed_external_ip }} --dport 80 -j ACCEPT
+-A INPUT -p tcp -s {{ bastion_iptables_openvpn_client_subnet }} --dport 80 -j ACCEPT
+
+# INPUT — HTTPS
+-A INPUT -p tcp -s {{ bastion_iptables_allowed_external_ip }} --dport 443 -j ACCEPT
+-A INPUT -p tcp -s {{ bastion_iptables_openvpn_client_subnet }} --dport 443 -j ACCEPT
+
+# INPUT — SSH 8282 (ACCEPT 먼저, DROP 마지막)
+-A INPUT -i {{ bastion_iptables_internal_iface }} -p tcp --dport {{ bastion_ssh_port }} -j ACCEPT
+-A INPUT -p tcp -s {{ bastion_iptables_openvpn_client_subnet }} --dport {{ bastion_ssh_port }} -j ACCEPT
+-A INPUT -p tcp -s {{ bastion_iptables_allowed_external_ip }} --dport {{ bastion_ssh_port }} -j ACCEPT
+
+# INPUT — WireGuard
+-A INPUT -p udp --dport 51820 -j ACCEPT
+
+# INPUT — OpenVPN
+-A INPUT -p udp --dport 1194 -j ACCEPT
+
+# INPUT — SSH 8282 knockd 차단 (마지막)
+-A INPUT -p tcp --dport {{ bastion_ssh_port }} -j DROP
+
+# FORWARD — RELATED,ESTABLISHED
+-A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+# FORWARD — OpenVPN → internal
+-A FORWARD -s {{ bastion_iptables_openvpn_client_subnet }} -d {{ bastion_iptables_internal_subnet }} -j ACCEPT
+
+# FORWARD — OpenVPN → external LAN (192.168.45.x RDP 등)
+-A FORWARD -s {{ bastion_iptables_openvpn_client_subnet }} -d {{ bastion_iptables_external_lan_subnet }} -j ACCEPT
+
+# FORWARD — ProxyJump SSH 2222 (WSL2 → 내부 노드)
+-A FORWARD -p tcp -d {{ bastion_iptables_internal_subnet }} --dport 2222 -j ACCEPT
+
+# FORWARD — SMB → storage
+-A FORWARD -p tcp -d 10.98.1.232 -m multiport --dports 139,445 -j ACCEPT
+-A FORWARD -p tcp -s 10.98.1.232 -m multiport --sports 139,445 -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+# FORWARD — MinIO → storage
+-A FORWARD -p tcp -d 10.98.1.232 -m multiport --dports 9000,9001 -j ACCEPT
+-A FORWARD -p tcp -s 10.98.1.232 -m multiport --sports 9000,9001 -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+# FORWARD — internal → external (NAT)
+-A FORWARD -i {{ bastion_iptables_internal_iface }} -o {{ bastion_iptables_external_iface }} -j ACCEPT
+
+# FORWARD — external → internal RELATED,ESTABLISHED
+-A FORWARD -i {{ bastion_iptables_external_iface }} -o {{ bastion_iptables_internal_iface }} -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+COMMIT
+
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+
+# NAT — MASQUERADE (내부망 → 외부)
+-A POSTROUTING -s {{ bastion_iptables_internal_subnet }} -o {{ bastion_iptables_external_iface }} -j MASQUERADE
+
+# NAT — MASQUERADE (OpenVPN → 내부망, RDP 응답 경로용)
+-A POSTROUTING -s {{ bastion_iptables_openvpn_client_subnet }} -o {{ bastion_iptables_internal_iface }} -j MASQUERADE
+
+# NAT — MASQUERADE (OpenVPN → External-Bridge LAN, 192.168.45.x RDP용)
+-A POSTROUTING -s {{ bastion_iptables_openvpn_client_subnet }} -o {{ bastion_iptables_external_iface }} -j MASQUERADE
+
+COMMIT

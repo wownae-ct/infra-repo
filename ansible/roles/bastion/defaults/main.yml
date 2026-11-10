@@ -1,0 +1,254 @@
+---
+# ============================================================
+# bastion role - defaults
+# ============================================================
+# bastion 의 모든 sub-task 가 공유하는 변수 모음.
+# group_vars/all.yml 또는 host_vars 에서 오버라이드 가능.
+# ============================================================
+
+
+# ============================================================
+# iptables (NAT + INPUT + FORWARD)
+# ============================================================
+# bastion 의 NAT (Internal-LAN → External-Bridge 마스커레이드).
+# 추후 input chain(SSH 포트 숨김, SMB/MinIO DNAT 등) 추가.
+
+# IP forwarding 활성화 (sysctl)
+bastion_iptables_ip_forward: true
+
+# 내부 NIC (NAT 대상이 들어오는 인터페이스)
+bastion_iptables_internal_iface: eth0
+
+# 외부 NIC (NAT 후 나가는 인터페이스)
+bastion_iptables_external_iface: eth1
+
+# NAT 대상 내부 서브넷
+bastion_iptables_internal_subnet: 10.98.1.0/24
+
+# 허용할 외부 고정 IP (본가)
+bastion_iptables_allowed_external_ip: "10.98.3.193"
+
+# OpenVPN 클라이언트 Subnet (tun0)
+bastion_iptables_openvpn_client_subnet: "10.99.3.0/24"
+
+# FORWARD policy
+bastion_iptables_forward_policy: DROP
+
+# External-Bridge LAN 대역 (192.168.45.x RDP 대상)
+bastion_iptables_external_lan_subnet: "10.99.2.0/24"
+
+# ============================================================
+# SSH 보안 (sshd_config.d drop-in)
+# ============================================================
+
+bastion_ssh_port: 8282
+
+# 재배포 시 안전상 22 도 LISTEN 유지하다가 검증 후 false 로
+bastion_ssh_keep_port_22: false
+
+bastion_ssh_permit_root_login: "no"
+bastion_ssh_password_authentication: "no"
+bastion_ssh_pubkey_authentication: "yes"
+bastion_ssh_use_pam: "no"
+bastion_ssh_kbd_interactive_auth: "no"
+bastion_ssh_challenge_response_auth: "no"
+bastion_ssh_x11_forwarding: "no"
+bastion_ssh_print_motd: "no"
+bastion_ssh_allow_tcp_forwarding: "yes"
+
+# ============================================================
+# BIND9 (내부 DNS 서버)
+# ============================================================
+# Zone 두 개 관리:
+#   - example.ddns.net      (외부 노출 도메인, DDNS 와 연동)
+#   - lab.internal  (내부망 전용)
+# 외부 query 는 listen 안 함 (eth1 미노출).
+
+bastion_bind9_internal_ip: 10.98.1.230
+
+# Domain 이름
+bastion_bind9_external_domain: example.ddns.net
+bastion_bind9_internal_domain: lab.internal
+
+# Upstream forwarders (외부 도메인)
+bastion_bind9_forwarders:
+  - 8.8.8.8
+  - 1.1.1.1
+
+# 어디서 들어온 query 를 허용할지
+bastion_bind9_allow_query:
+  - 127.0.0.1
+  - 10.98.1.0/24
+  - 10.99.3.0/24
+  - 10.99.1.0/24
+
+# 재귀 query 허용 (외부 도메인 풀기) — 내부 + VPN 만
+bastion_bind9_allow_recursion:
+  - 127.0.0.1
+  - 10.98.1.0/24
+  - 10.99.3.0/24
+  - 10.99.1.0/24
+
+# Listen 인터페이스 (외부망 eth1 에는 노출 X)
+bastion_bind9_listen_on:
+  - 127.0.0.1
+  - "{{ bastion_bind9_internal_ip }}"
+
+# ---------- Zone records ----------
+# Serial 은 zone 변경 시 수동 bump. 형식: YYYYMMDDNN (날짜 + 일별 시퀀스)
+bastion_bind9_external_serial: 2026052401
+bastion_bind9_internal_serial: 2026051401
+
+# 외부 zone (example.ddns.net) - DDNS 노출 도메인
+bastion_bind9_external_records:
+  - { name: "@",   ip: "10.98.1.230", comment: "bastion" }
+  - { name: "prx", ip: "10.98.1.230", comment: "proxy alias" }
+  - { name: "str", ip: "10.98.1.232", comment: "storage" }
+  - { name: "s3",  ip: "10.98.1.230", comment: "internal override" }
+
+# 내부 zone (lab.internal) - 내부망 전용
+bastion_bind9_internal_records:
+  - { name: "ns1",            ip: "10.98.1.230" }
+  - { name: "@",              ip: "10.98.1.230" }
+  - { name: "jenkins",        ip: "10.98.1.250" }
+  - { name: "grafana",        ip: "10.98.1.250" }
+  - { name: "argocd",         ip: "10.98.1.250" }
+  - { name: "longhorn",       ip: "10.98.1.250" }
+  - { name: "prometheus",     ip: "10.98.1.250" }
+  - { name: "alertmanager",   ip: "10.98.1.250" }
+  - { name: "kiali",          ip: "10.98.1.250" }
+  - { name: "loki",           ip: "10.98.1.250" }
+  - { name: "bastion",        ip: "10.98.1.230" }
+  - { name: "storage",        ip: "10.98.1.232" }
+  - { name: "db",             ip: "10.98.1.233" }
+  - { name: "k8s-master-01",  ip: "10.98.1.241" }
+  - { name: "k8s-master-02",  ip: "10.98.1.242" }
+  - { name: "k8s-master-03",  ip: "10.98.1.243" }
+  - { name: "k8s-worker-01",  ip: "10.98.1.244" }
+  - { name: "k8s-worker-02",  ip: "10.98.1.245" }
+  - { name: "k8s-worker-03",  ip: "10.98.1.246" }
+
+# ============================================================
+# Chrony 서버 (다른 VM 의 NTP 서버 역할)
+# ============================================================
+# 클라이언트 설정은 common role 의 chrony-client.conf.j2 에서 관리.
+# bastion 은 거기에 더해 server 기능 활성화 (allow 디렉티브).
+# drop-in 으로 /etc/chrony/conf.d/bastion-server.conf 에 박는다.
+
+bastion_chrony_allow_subnets:
+  - 10.98.1.0/24
+
+# ============================================================
+# knockd (port knocking)
+# ============================================================
+# bastion 외부 SSH (8282) 는 평소 차단 (iptables INPUT DROP).
+# knock 시퀀스 받으면 그 클라이언트 IP 만 일시적으로 8282 허용.
+#
+# 시퀀스 (3개의 TCP SYN 을 5초 이내 순서대로):
+#   open: 10001 → 10002 → 10003  → 8282 ACCEPT (10850초 = 약 3시간)
+#   close: 10003 → 10002 → 10001 → 8282 DROP (즉시 닫음)
+#
+# 외부 NIC (eth1) 만 모니터링. 내부 NIC (eth0) 는 무관.
+
+bastion_knockd_interface: eth1
+bastion_knockd_open_sequence: "10001,10002,10003"   # example value (real one is private)
+bastion_knockd_close_sequence: "10003,10002,10001"   # example value (real one is private)
+bastion_knockd_open_timeout: 10850   # 초. 3시간보다 약간 길게.
+bastion_knockd_seq_timeout: 5
+bastion_knockd_port: "{{ bastion_ssh_port }}"   # 8282 (ssh 변수 재사용)
+
+# ============================================================
+# WireGuard (AWS EC2 와 의 P2P 터널)
+# ============================================================
+# bastion 의 10.99.1.2 ↔ AWS EC2 의 10.99.1.1
+# Endpoint: AWS EC2 의 외부 IP
+# Keep-alive: NAT traversal 위해 25 초마다 핑
+
+# 서비스 활성화 toggle.
+# 마이그레이션 동안: false (구 bastion 이 EC2 와 통신 중, ping-pong 방지)
+# cutover 시점: true (트래픽 새 bastion 으로 전환)
+bastion_wireguard_enabled: true
+
+bastion_wireguard_interface: wg0
+bastion_wireguard_address: 10.99.1.2/24
+bastion_wireguard_listen_port: 51820
+bastion_wireguard_peer_endpoint: "10.98.4.135:51820"
+bastion_wireguard_peer_allowed_ips: 10.99.1.1/32
+bastion_wireguard_persistent_keepalive: 25
+# 키 - vault 변수에서 가져옴
+bastion_wireguard_private_key: "{{ vault_bastion_wg_private_key }}"
+bastion_wireguard_peer_public_key: "{{ vault_bastion_wg_peer_public_key }}"
+
+
+# ============================================================
+# OpenVPN (외부 → 내부망 접근 VPN 서버)
+# ============================================================
+# 10.99.3.0/24 의 VPN 클라이언트 → 10.98.1.0/24 내부망 접근.
+# 인증서/키는 백업 그대로 재사용 (files/openvpn/ 의 평문 + server.key 만 vault).
+
+bastion_openvpn_port: 1194
+bastion_openvpn_proto: udp
+bastion_openvpn_dev: tun
+bastion_openvpn_server_network: "10.99.3.0 255.255.255.0"
+bastion_openvpn_push_routes:
+  - "10.98.1.0 255.255.255.0"
+  - "10.99.2.0 255.255.255.0"
+bastion_openvpn_push_dns: "10.98.1.230"
+bastion_openvpn_keepalive: "10 120"
+bastion_openvpn_client_to_client: true
+bastion_openvpn_verb: 3
+
+# ============================================================
+# Certbot (Let's Encrypt 인증서 관리)
+# ============================================================
+# 기존 인증서는 백업의 letsencrypt.tar.gz 로 복원.
+# renewal 은 certbot 패키지 + python3-certbot-nginx (renewal-hooks 동작).
+#
+# auto-renewal cron 은 cutover 후 외부 80 노출 시점에 켜야 작동.
+# 그 전엔 패키지 설치 + 인증서 파일만 박아두기.
+
+bastion_certbot_domain: "{{ bastion_bind9_external_domain }}"   # example.ddns.net
+
+# external vhost 활성화 toggle.
+# cutover 전엔 false (external-svc.conf 박지 않음 → 443 listen 안 함).
+# cutover 시점에 true.
+bastion_nginx_external_vhost_enabled: true
+
+# ============================================================
+# nginx (reverse proxy / TLS terminator)
+# ============================================================
+# - 외부 HTTPS (example.ddns.net, s3.example.ddns.net) - Let's Encrypt
+# - 내부 HTTP  (*.lab.internal) - VPN 전용
+# - 백엔드: k8s_istio_gw (10.98.1.250:80) + minio (storage:9000/9001)
+#
+# 외부 80/443 노출 toggle. DDNS cutover 전엔 false 권장.
+bastion_nginx_external_enabled: true
+
+# 메인 nginx.conf 변수
+bastion_nginx_user: www-data
+bastion_nginx_worker_connections: 768
+bastion_nginx_client_max_body_size: 50m
+
+# 백엔드 upstream
+bastion_nginx_backend_k8s_gw: "10.98.1.250:80"
+bastion_nginx_backend_storage: "10.98.1.232"   # MinIO host
+
+# 내부 vhost 리스트 (모두 동일 패턴: k8s_istio_gw 로 프록시)
+# 추가 vhost 는 여기에 한 줄 추가만 하면 됨.
+bastion_nginx_internal_vhosts:
+  - jenkins
+  - grafana
+  - argocd
+  - longhorn
+  - prometheus
+  - alertmanager
+  - kiali
+  - loki
+
+bastion_nginx_internal_domain: "{{ bastion_bind9_internal_domain }}"
+
+# 내부 vhost 접근 허용 대역
+bastion_nginx_internal_allow:
+  - 10.98.1.0/24  # Internal LAN
+  - 10.99.3.0/24   # OpenVPN
+  - 127.0.0.1

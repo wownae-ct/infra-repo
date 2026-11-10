@@ -1,0 +1,71 @@
+---
+# ============================================================
+# roles/k8s/handlers/main.yml
+# ============================================================
+# tasks/*.yml 에서 notify: "Restart containerd" 처럼 호출.
+# 한 play 안에서 여러 task가 같은 핸들러를 notify 해도 마지막에 1번만 실행됨.
+# (의도된 멱등성 — 설정 5개가 동시에 바뀌어도 데몬 재시작은 1번)
+# ============================================================
+
+# ------------------------------------------------------------
+# sysctl / kernel modules
+# ------------------------------------------------------------
+- name: "Reload sysctl"
+  ansible.builtin.command:
+    cmd: sysctl --system
+  # --system: /etc/sysctl.d/*.conf 전부 다시 읽음. 노션 사양의
+  # k8s 표준 3개 + Cilium override(rp_filter=0)가 한 번에 반영됨.
+  changed_when: true   # command 모듈은 stdout 비교가 어려우니 명시적으로 changed 처리
+
+- name: "Reload modules"
+  ansible.builtin.systemd:
+    name: systemd-modules-load.service
+    state: restarted
+    daemon_reload: false
+  # /etc/modules-load.d/k8s.conf 가 바뀌면 이 서비스가 부팅 시 다시 읽음.
+  # 즉시 반영 위해 restart. (overlay / br_netfilter는 이미 로드되어 있다면
+  # idempotent하게 처리됨 — 이미 로드된 모듈은 재로드 안 함)
+
+# ------------------------------------------------------------
+# Container runtime
+# ------------------------------------------------------------
+- name: "Restart containerd"
+  ansible.builtin.systemd:
+    name: containerd
+    state: restarted
+    daemon_reload: true
+  # daemon_reload: 혹시 unit 파일 자체가 바뀌었을 때 대비 (apt 업그레이드 등).
+  # 주의: kubelet 가 이미 도는 노드에서 containerd 재시작하면 컨테이너가
+  # 잠시 끊긴다. 그래서 containerd.yml 은 클러스터 join 전에만 돌리는 게 원칙.
+
+# ------------------------------------------------------------
+# Control-plane HA (masters only)
+# ------------------------------------------------------------
+- name: "Restart keepalived"
+  ansible.builtin.systemd:
+    name: keepalived
+    state: restarted
+    daemon_reload: true
+  # 주의: VIP 가 잠깐 떠다님 → 다른 master 로 failover.
+  # 운영 중 변경 시 master 한 대씩 (serial: 1) 돌리는 게 안전.
+
+- name: "Restart haproxy"
+  ansible.builtin.systemd:
+    name: haproxy
+    state: restarted
+    daemon_reload: true
+  # haproxy reload (graceful) 가 더 좋지만, systemd로 reload 시
+  # /run/haproxy 권한 이슈가 종종 있어 일단 restart로. 
+  # 추후 stable 운영에서 'reload-or-restart'로 바꿔도 됨.
+
+# ------------------------------------------------------------
+# kubelet
+# ------------------------------------------------------------
+- name: "Restart kubelet"
+  ansible.builtin.systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: true
+  # kubelet 재시작 = 그 노드의 Pod 들이 잠시 NotReady 표시.
+  # 단 진짜 끊기는 건 아니고 kubelet → API server 보고가 잠시 끊길 뿐.
+  # 노드 join 전이라면 그냥 enabled 상태로 두고 끝까지 안 건드려도 됨.

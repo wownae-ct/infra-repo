@@ -1,0 +1,17 @@
+# /etc/ssh/sshd_config.d/50-storage.conf - managed by Ansible (storage role)
+# storage 의 SSH 보안 정책 drop-in.
+
+{% if storage_ssh_keep_port_22 | bool %}
+Port 22
+{% endif %}
+Port {{ storage_ssh_port }}
+
+PermitRootLogin {{ storage_ssh_permit_root_login }}
+PasswordAuthentication {{ storage_ssh_password_authentication }}
+PubkeyAuthentication {{ storage_ssh_pubkey_authentication }}
+
+UsePAM {{ storage_ssh_use_pam }}
+
+X11Forwarding {{ storage_ssh_x11_forwarding }}
+PrintMotd {{ storage_ssh_print_motd }}
+AllowTcpForwarding {{ storage_ssh_allow_tcp_forwarding }}

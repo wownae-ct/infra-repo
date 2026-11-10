@@ -1,0 +1,14 @@
+// /etc/bind/named.conf.local - managed by Ansible (bastion role)
+// Local zone declarations
+
+zone "{{ bastion_bind9_external_domain }}" {
+    type master;
+    file "/etc/bind/{{ bastion_bind9_external_domain }}.zone";
+    allow-update { none; };
+};
+
+zone "{{ bastion_bind9_internal_domain }}" {
+    type master;
+    file "/etc/bind/{{ bastion_bind9_internal_domain }}.zone";
+    allow-update { none; };
+};

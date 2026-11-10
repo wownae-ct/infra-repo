@@ -1,0 +1,37 @@
+---
+# ============================================================
+# storage role - packages sub-task
+# ============================================================
+# storage VM 에서 필요한 모든 패키지 설치.
+# - lvm2, xfsprogs        : LVM + xfs
+# - nfs-utils             : NFS 서버
+# - samba, *              : SMB 서버
+# - firewalld             : 방화벽
+# - policycoreutils-python-utils, python3-libsemanage : SELinux 관리
+# - curl, wget, tar       : MinIO binary 다운로드
+# - rsync                 : 백업/이관 보조
+# ============================================================
+
+- name: Install storage packages
+  ansible.builtin.dnf:
+    name: "{{ storage_packages }}"
+    state: present
+  become: true
+  tags: [storage, packages]
+
+# ---------- 검증 ----------
+
+- name: Verify - 필수 바이너리 존재 확인
+  ansible.builtin.command: "which {{ item }}"
+  loop:
+    - pvcreate          # lvm2
+    - mkfs.xfs          # xfsprogs
+    - exportfs          # nfs-utils
+    - smbd              # samba
+    - firewall-cmd      # firewalld
+    - semanage          # policycoreutils-python-utils
+  register: which_check
+  changed_when: false
+  failed_when: which_check.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, packages, verify]

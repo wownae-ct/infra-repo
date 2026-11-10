@@ -1,0 +1,31 @@
+---
+# ============================================================
+# roles/longhorn/tasks/main.yml — sub-task router
+# ============================================================
+# Sub-task:
+#   prerequisites : worker 노드 사전준비 (multipath, packages, 디스크 포맷+마운트)
+#   helm          : chart install
+#   disks         : Longhorn Node CRD 에 마운트 path 등록
+#   backup        : R2 backup-target + RecurringJob
+#   verify        : 종합 검증
+# ============================================================
+
+- name: "longhorn | Assert longhorn_sub_task is provided and valid"
+  ansible.builtin.assert:
+    that:
+      - longhorn_sub_task is defined
+      - longhorn_sub_task in _longhorn_sub_tasks_allowed
+    fail_msg: >-
+      longhorn_sub_task must be one of: {{ _longhorn_sub_tasks_allowed | join(', ') }}
+      (got: {{ longhorn_sub_task | default('UNDEFINED') }})
+    quiet: true
+  vars:
+    _longhorn_sub_tasks_allowed:
+      - prerequisites
+      - helm
+      - disks
+      - backup
+      - verify
+
+- name: "longhorn | Include sub-task → {{ longhorn_sub_task }}"
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/{{ longhorn_sub_task }}.yml"

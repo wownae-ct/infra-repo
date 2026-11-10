@@ -1,0 +1,26 @@
+---
+# ============================================================
+# Phase 0: bastion 부트스트랩
+# ============================================================
+# 재배포 시 첫 적용 전용. cloud-init 으로 막 부팅한 bastion 에:
+#   1. iptables NAT 활성화
+#   2. sshd 8282 전환
+# ============================================================
+
+- name: Bootstrap bastion (iptables NAT + ssh 8282)
+  hosts: bastion
+  become: true
+  gather_facts: true
+  vars:
+    ansible_port: 22   # bootstrap: 아직 sshd 가 22 만 listen
+
+  tasks:
+    - name: iptables NAT 부트스트랩
+      ansible.builtin.import_role:
+        name: bastion
+        tasks_from: iptables
+
+    - name: ssh 8282 전환 부트스트랩
+      ansible.builtin.import_role:
+        name: bastion
+        tasks_from: ssh

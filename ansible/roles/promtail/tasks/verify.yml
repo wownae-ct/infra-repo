@@ -1,0 +1,103 @@
+---
+# ============================================================
+# promtail/tasks/verify.yml — sub-task 3
+# ============================================================
+# 대상: bastion, storage, db
+# 검증:
+#   1. promtail 서비스 active
+#   2. config syntax 유효 (-check-syntax)
+#   3. HTTP listen port 응답 (/ready endpoint)
+#   4. journal 에 최근 에러 없는지
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. 서비스 active
+# ------------------------------------------------------------
+- name: "verify | promtail service is active"
+  ansible.builtin.command: systemctl is-active promtail
+  become: true
+  register: _v_active
+  changed_when: false
+  failed_when: _v_active.stdout != "active"
+  when: not ansible_check_mode
+  tags: [promtail, verify]
+
+# ------------------------------------------------------------
+# 2. config syntax 유효
+# ------------------------------------------------------------
+- name: "verify | promtail config syntax check"
+  ansible.builtin.command:
+    cmd: "{{ promtail_binary_path }} -config.file={{ promtail_config_path }} -check-syntax"
+  become: true
+  register: _v_syntax
+  changed_when: false
+  failed_when: _v_syntax.rc != 0
+  when: not ansible_check_mode
+  tags: [promtail, verify]
+
+# ------------------------------------------------------------
+# 3. HTTP listen port 응답 (/ready)
+# ------------------------------------------------------------
+- name: "verify | Determine HTTP port for {{ promtail_server_role }}"
+  ansible.builtin.set_fact:
+    _promtail_http_port: >-
+      {%- if promtail_server_role == 'bastion' -%}{{ promtail_http_port_bastion }}
+      {%- elif promtail_server_role == 'storage' -%}{{ promtail_http_port_storage }}
+      {%- elif promtail_server_role == 'db' -%}{{ promtail_http_port_db }}
+      {%- endif -%}
+  tags: [promtail, verify]
+
+- name: "verify | promtail /ready endpoint responds"
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ _promtail_http_port | trim }}/ready"
+    method: GET
+    status_code: 200
+    timeout: 5
+  become: true
+  register: _v_ready
+  retries: 6
+  delay: 5
+  until: _v_ready.status == 200
+  when: not ansible_check_mode
+  tags: [promtail, verify]
+
+# ------------------------------------------------------------
+# 4. journal 에 최근 에러 (보고용, 실패 안 함)
+# ------------------------------------------------------------
+- name: "verify | Check recent promtail journal errors"
+  ansible.builtin.shell: |
+    journalctl -u promtail --since "2 minutes ago" --no-pager 2>&1 \
+      | grep -iE "error|fatal|panic" \
+      | grep -v "level=info" \
+      | head -5
+  args:
+    executable: /bin/bash
+  become: true
+  register: _v_errors
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+  tags: [promtail, verify]
+
+- name: "verify | Report journal errors (if any)"
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'No recent errors in promtail journal'
+         if _v_errors.stdout | trim | length == 0
+         else 'Recent errors (review needed): ' + _v_errors.stdout }}
+  when: not ansible_check_mode
+  tags: [promtail, verify]
+
+# ------------------------------------------------------------
+# 5. 최종 리포트
+# ------------------------------------------------------------
+- name: "verify | Final report"
+  ansible.builtin.debug:
+    msg:
+      - "Host               : {{ inventory_hostname }} ({{ promtail_server_role }})"
+      - "Service            : active"
+      - "Config             : syntax OK"
+      - "HTTP /ready        : port {{ _promtail_http_port | trim }} OK"
+      - "Push target        : {{ promtail_loki_push_url }}"
+  when: not ansible_check_mode
+  tags: [promtail, verify]

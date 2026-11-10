@@ -1,0 +1,154 @@
+---
+# ============================================================
+# longhorn/tasks/verify.yml — sub-task 5
+# ============================================================
+# 대상: k8s-master-01
+# 종합 검증.
+#
+# v1.11+ 변경점:
+#   - setting/backup-target / setting/backup-target-credential-secret 폐기
+#   - BackupTarget CRD (default 이름) 로 통합
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Core 컴포넌트 Ready
+# ------------------------------------------------------------
+- name: "verify | longhorn-manager DaemonSet ready"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      rollout status daemonset/longhorn-manager \
+      --timeout={{ longhorn_wait_timeout }}
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: "verify | longhorn-driver-deployer ready"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ longhorn_kubeconfig }}
+      -n {{ longhorn_namespace }}
+      wait --for=condition=Available deployment/longhorn-driver-deployer
+      --timeout={{ longhorn_wait_timeout }}
+  changed_when: false
+
+- name: "verify | longhorn-ui ready"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ longhorn_kubeconfig }}
+      -n {{ longhorn_namespace }}
+      wait --for=condition=Available deployment/longhorn-ui
+      --timeout={{ longhorn_wait_timeout }}
+  changed_when: false
+
+# ------------------------------------------------------------
+# 2. StorageClass
+# ------------------------------------------------------------
+- name: "verify | StorageClass exists (longhorn)"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      get sc longhorn -o name
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+# ------------------------------------------------------------
+# 3. Worker 노드 disks
+# ------------------------------------------------------------
+- name: "verify | Worker nodes have configured disks"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      get node.longhorn.io {{ item }} \
+      -o jsonpath='{.spec.disks}'
+  args:
+    executable: /bin/bash
+  loop: "{{ groups['k8s_workers'] }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _v_disks
+  changed_when: false
+  failed_when: longhorn_disk_mount_path not in _v_disks.stdout
+
+- name: "verify | List Longhorn nodes with status"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      get node.longhorn.io -o wide
+  args:
+    executable: /bin/bash
+  register: _v_nodes
+  changed_when: false
+
+- name: "verify | Show Longhorn nodes"
+  ansible.builtin.debug:
+    msg: "{{ _v_nodes.stdout_lines }}"
+
+# ------------------------------------------------------------
+# 4. BackupTarget (v1.11+ CRD)
+# ------------------------------------------------------------
+- name: "verify | BackupTarget URL"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      get backuptarget default -o jsonpath='{.spec.backupTargetURL}'
+  args:
+    executable: /bin/bash
+  register: _v_bt
+  changed_when: false
+  failed_when: _v_bt.stdout != longhorn_backup_target
+
+- name: "verify | BackupTarget credential secret"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      get backuptarget default -o jsonpath='{.spec.credentialSecret}'
+  args:
+    executable: /bin/bash
+  register: _v_bt_cred
+  changed_when: false
+  failed_when: _v_bt_cred.stdout != longhorn_backup_secret_name
+
+- name: "verify | BackupTarget availability (Available condition)"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      get backuptarget default -o jsonpath='{.status.available}'
+  args:
+    executable: /bin/bash
+  register: _v_bt_avail
+  changed_when: false
+  # status.available 는 controller 가 R2 reachable 확인 후 true 로 세팅.
+  # 첫 sync 까진 시간 걸릴 수 있어 failed_when 은 두지 않음 (보고용).
+
+# ------------------------------------------------------------
+# 5. RecurringJob
+# ------------------------------------------------------------
+- name: "verify | RecurringJob"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      get recurringjob {{ longhorn_recurring_job_name }} -o wide
+  args:
+    executable: /bin/bash
+  register: _v_rj
+  changed_when: false
+
+- name: "verify | Show RecurringJob"
+  ansible.builtin.debug:
+    msg: "{{ _v_rj.stdout_lines }}"
+
+# ------------------------------------------------------------
+# 6. 최종 리포트
+# ------------------------------------------------------------
+- name: "verify | Final report"
+  ansible.builtin.debug:
+    msg:
+      - "Core components       : longhorn-manager / driver-deployer / ui OK"
+      - "StorageClass          : longhorn (default)"
+      - "Worker disks          : OK (path={{ longhorn_disk_mount_path }})"
+      - "BackupTarget URL      : {{ _v_bt.stdout }}"
+      - "BackupTarget cred sec : {{ _v_bt_cred.stdout }}"
+      - "BackupTarget available: {{ _v_bt_avail.stdout | default('(syncing)') }}"
+      - "RecurringJob          : {{ longhorn_recurring_job_name }} OK"
+      - "All Longhorn components healthy."

@@ -1,0 +1,28 @@
+# /etc/nginx/conf.d/internal-{{ vhost_name }}.conf - managed by Ansible (bastion role)
+# Internal service: {{ vhost_name }}.{{ bastion_nginx_internal_domain }}
+
+server {
+    listen 80;
+    server_name {{ vhost_name }}.{{ bastion_nginx_internal_domain }};
+
+{% for cidr in bastion_nginx_internal_allow %}
+    allow {{ cidr }};
+{% endfor %}
+    deny all;
+    error_page 403 = @blackhole;
+
+    location / {
+        proxy_pass http://{{ bastion_nginx_backend_k8s_gw }};
+        proxy_http_version 1.1;
+        proxy_set_header Host {{ vhost_name }}.{{ bastion_nginx_internal_domain }};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+
+    location @blackhole { return 444; }
+}

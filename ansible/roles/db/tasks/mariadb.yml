@@ -1,0 +1,87 @@
+---
+# ============================================================
+# db role - mariadb sub-task
+# ============================================================
+# MariaDB 10.6 설정 + 서비스.
+# - 50-server.cnf 렌더링 (백업 그대로 + InnoDB buffer pool 튜닝)
+# - 서비스 enable + start
+#
+# datadir 은 /var/lib/mysql (apt 기본). 별도 디스크 없음.
+#
+# 의존성:
+#   - packages.yml: mariadb-server
+#   - ufw.yml:      3306 허용
+# ============================================================
+
+# ---------- 설정 파일 ----------
+
+- name: Render MariaDB server config
+  ansible.builtin.template:
+    src: mariadb/50-server.cnf.j2
+    dest: /etc/mysql/mariadb.conf.d/50-server.cnf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  notify: restart mariadb
+  tags: [db, mariadb, config]
+
+# ---------- 서비스 ----------
+
+- name: Ensure mariadb enabled and running
+  ansible.builtin.systemd:
+    name: mariadb
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [db, mariadb, service]
+
+# Handler 즉시 실행 (verify 전에 새 설정 반영 보장)
+- name: Flush handlers (mariadb 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [db, mariadb]
+
+# ---------- 검증 ----------
+
+- name: Verify - mariadb 서비스 active
+  ansible.builtin.systemd:
+    name: mariadb
+    state: started
+  become: true
+  register: mariadb_running
+  changed_when: false
+  failed_when: mariadb_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [db, mariadb, verify]
+
+- name: Verify - mariadb listening on bind-address
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E "{{ db_mariadb_bind_address }}:{{ db_mariadb_port }}"
+  args:
+    executable: /bin/bash
+  become: true
+  register: mariadb_listen
+  changed_when: false
+  failed_when: mariadb_listen.rc != 0
+  when: not ansible_check_mode
+  tags: [db, mariadb, verify]
+
+- name: Verify - mariadb 연결 가능 (localhost)
+  ansible.builtin.command: mariadb -e "SELECT VERSION();"
+  become: true
+  register: mariadb_version_check
+  changed_when: false
+  failed_when: mariadb_version_check.rc != 0
+  when: not ansible_check_mode
+  tags: [db, mariadb, verify]
+
+- name: Verify - 문자셋 utf8mb4 설정
+  ansible.builtin.command: mariadb -e "SHOW VARIABLES LIKE 'character_set_server';"
+  become: true
+  register: charset_check
+  changed_when: false
+  failed_when: db_mariadb_character_set_server not in charset_check.stdout
+  when: not ansible_check_mode
+  tags: [db, mariadb, verify]

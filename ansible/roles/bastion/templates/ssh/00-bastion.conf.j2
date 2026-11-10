@@ -1,0 +1,18 @@
+# /etc/ssh/sshd_config.d/00-bastion.conf - managed by Ansible (bastion role)
+# bastion 의 sshd 보안 정책 (drop-in 으로 메인 sshd_config 오버라이드)
+
+Port {{ bastion_ssh_port }}
+{% if bastion_ssh_keep_port_22 | bool %}
+Port 22
+{% endif %}
+
+PermitRootLogin {{ bastion_ssh_permit_root_login }}
+PasswordAuthentication {{ bastion_ssh_password_authentication }}
+PubkeyAuthentication {{ bastion_ssh_pubkey_authentication }}
+UsePAM {{ bastion_ssh_use_pam }}
+KbdInteractiveAuthentication {{ bastion_ssh_kbd_interactive_auth }}
+ChallengeResponseAuthentication {{ bastion_ssh_challenge_response_auth }}
+
+X11Forwarding {{ bastion_ssh_x11_forwarding }}
+PrintMotd {{ bastion_ssh_print_motd }}
+AllowTcpForwarding {{ bastion_ssh_allow_tcp_forwarding }}

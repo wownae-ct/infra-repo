@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# sealed-secrets chart values
+#
+# defaults/main.yml 의 ss_chart_values dict 를 그대로 YAML 로 직렬화.
+# chart values 추가/변경 시 defaults 만 고치면 됨.
+
+{{ ss_chart_values | to_nice_yaml(indent=2, width=200) }}

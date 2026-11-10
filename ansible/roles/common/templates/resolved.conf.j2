@@ -1,0 +1,10 @@
+# /etc/systemd/resolved.conf - managed by Ansible (common role)
+# https://www.freedesktop.org/software/systemd/man/resolved.conf.html
+
+[Resolve]
+DNS={{ common_dns_servers | join(' ') }}
+FallbackDNS=1.1.1.1 8.8.8.8
+Domains={{ common_dns_search | join(' ') }}
+DNSStubListener=yes
+Cache=yes
+DNSSEC=no

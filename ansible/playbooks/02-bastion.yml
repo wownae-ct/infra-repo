@@ -1,0 +1,27 @@
+---
+# ============================================================
+# Phase 2: bastion 전체 설정
+# ============================================================
+# bastion role 의 모든 sub-task 를 순서대로 적용.
+#
+# 사용:
+#   # 전체 적용
+#   ansible-playbook -i inventories/hyperv/hosts.ini playbooks/02-bastion.yml \
+#     --ask-vault-pass
+#
+#   # 특정 부분만
+#   --tags iptables    NAT 만
+#   --tags bind9       BIND9 만
+#   --tags chrony      NTP 서버 설정만
+#
+#   # dry-run
+#   --check --diff
+# ============================================================
+
+- name: Configure bastion host
+  hosts: bastion
+  become: true
+  gather_facts: true
+
+  roles:
+    - bastion

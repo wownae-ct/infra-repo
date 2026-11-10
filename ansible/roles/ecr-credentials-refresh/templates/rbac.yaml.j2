@@ -1,0 +1,54 @@
+# {{ ansible_managed }}
+# RBAC for ecr-credentials-refresh CronJob.
+# 백업 환경 대비 개선: serviceAccountName: default → 전용 SA (least privilege).
+#
+# RBAC 주의:
+#   - create 는 K8s RBAC 한계상 resourceNames 와 같이 쓸 수 없음
+#     (리소스 생성 시점엔 이름이 아직 존재하지 않으므로 authorization 불가)
+#   - 따라서 create 는 namespace 전체 secrets 허용,
+#     get/update/patch 만 ecr-credentials 한 개로 제한 (현실적 least privilege)
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ ecr_sa_name }}
+  namespace: {{ ecr_namespace }}
+  labels:
+    app.kubernetes.io/name: ecr-credentials-refresh
+    app.kubernetes.io/managed-by: ansible
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ ecr_role_name }}
+  namespace: {{ ecr_namespace }}
+  labels:
+    app.kubernetes.io/name: ecr-credentials-refresh
+    app.kubernetes.io/managed-by: ansible
+rules:
+  # 새 Secret 생성 — RBAC 한계로 resourceNames 못 씀
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  # 기존 Secret 조작 — ecr-credentials 한 개로 제한
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "update", "patch"]
+    resourceNames: ["{{ ecr_secret_name }}"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ ecr_binding_name }}
+  namespace: {{ ecr_namespace }}
+  labels:
+    app.kubernetes.io/name: ecr-credentials-refresh
+    app.kubernetes.io/managed-by: ansible
+subjects:
+  - kind: ServiceAccount
+    name: {{ ecr_sa_name }}
+    namespace: {{ ecr_namespace }}
+roleRef:
+  kind: Role
+  name: {{ ecr_role_name }}
+  apiGroup: rbac.authorization.k8s.io

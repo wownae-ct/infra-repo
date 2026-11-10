@@ -1,0 +1,53 @@
+---
+# ============================================================
+# promtail/tasks/configure.yml — sub-task 2
+# ============================================================
+# 대상: bastion, storage, db
+# promtail_server_role 변수에 따라 해당 서버의 config 템플릿 배포.
+#
+# 사전조건: install sub-task 완료 (바이너리 + systemd 유닛)
+# ============================================================
+
+- name: "configure | Assert promtail_server_role is provided"
+  ansible.builtin.assert:
+    that:
+      - promtail_server_role is defined
+      - promtail_server_role in ['bastion', 'storage', 'db']
+    fail_msg: >-
+      promtail_server_role must be one of: bastion, storage, db
+      (got: {{ promtail_server_role | default('UNDEFINED') }})
+    quiet: true
+  tags: [promtail, configure]
+
+# ------------------------------------------------------------
+# config 렌더 + 배포
+# ------------------------------------------------------------
+- name: "configure | Render promtail config ({{ promtail_server_role }})"
+  ansible.builtin.template:
+    src: "promtail-{{ promtail_server_role }}.yml.j2"
+    dest: "{{ promtail_config_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  notify: restart promtail
+  tags: [promtail, configure, config]
+
+# ------------------------------------------------------------
+# 서비스 enable + start
+# ------------------------------------------------------------
+- name: "configure | Enable and start promtail"
+  ansible.builtin.systemd:
+    name: promtail
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  when: not ansible_check_mode
+  tags: [promtail, configure, service]
+
+# config 변경 시 즉시 restart (verify 전에 새 설정 반영 보장)
+- name: "configure | Flush handlers (promtail 재시작 즉시 적용)"
+  ansible.builtin.meta: flush_handlers
+  tags: [promtail, configure]

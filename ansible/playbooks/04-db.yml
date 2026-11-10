@@ -1,0 +1,35 @@
+---
+# ============================================================
+# Phase 4: db 전체 설정
+# ============================================================
+# db role 의 모든 sub-task 를 순서대로 적용.
+#
+# 사용:
+#   # 전체 적용
+#   ansible-playbook -i inventories/hyperv/hosts.ini playbooks/04-db.yml \
+#     --ask-vault-pass
+#
+#   # 특정 부분만
+#   --tags packages    패키지만
+#   --tags ssh         SSH 만 (22 → 2222)
+#   --tags ufw         방화벽만
+#   --tags mariadb     MariaDB 설정/서비스만
+#   --tags grants      유저/권한만
+#
+#   # dry-run
+#   --check --diff
+#
+#   # 검증만
+#   --tags verify
+#
+# NOTE:
+#   - all-databases.sql 복원은 별도 playbook (이관 시점)
+# ============================================================
+
+- name: Configure db host
+  hosts: db
+  become: true
+  gather_facts: true
+
+  roles:
+    - db

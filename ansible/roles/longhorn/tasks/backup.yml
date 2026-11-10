@@ -1,0 +1,117 @@
+---
+# ============================================================
+# longhorn/tasks/backup.yml — sub-task 4
+# ============================================================
+# 대상: k8s-master-01
+# - R2 credential secret 생성/갱신
+# - longhorn settings: backup-target, backup-target-credential-secret
+# - RecurringJob: daily-backup
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. R2 credential Secret
+# ------------------------------------------------------------
+# 멱등성 강화: 디스크에 파일 안 쓰고, 현재 secret 과 비교 후 차이 있을 때만 apply.
+# (template→file→apply→delete 4-step 의 changed=true 누적 회피)
+
+- name: "backup | Get current R2 secret data (if exists)"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      get secret {{ longhorn_backup_secret_name }} \
+      -o jsonpath='{.data}' 2>/dev/null || echo ""
+  args:
+    executable: /bin/bash
+  register: _r2_current
+  changed_when: false
+  no_log: true
+
+- name: "backup | Compute desired secret data (base64)"
+  ansible.builtin.set_fact:
+    _r2_desired:
+      AWS_ACCESS_KEY_ID: "{{ vault_longhorn_r2_access_key_id | b64encode }}"
+      AWS_SECRET_ACCESS_KEY: "{{ vault_longhorn_r2_secret_access_key | b64encode }}"
+      AWS_ENDPOINTS: "{{ vault_longhorn_r2_endpoint | b64encode }}"
+      AWS_DEFAULT_REGION: "{{ 'auto' | b64encode }}"
+  no_log: true
+
+- name: "backup | Decide if R2 secret needs update"
+  ansible.builtin.set_fact:
+    _r2_secret_changed: >-
+      {{
+        _r2_current.stdout | trim | length == 0
+        or (_r2_current.stdout | from_json | default({})) != _r2_desired
+      }}
+  no_log: true
+
+- name: "backup | Apply R2 secret (only when changed)"
+  ansible.builtin.shell: |
+    cat <<EOF | kubectl --kubeconfig={{ longhorn_kubeconfig }} apply -f -
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: {{ longhorn_backup_secret_name }}
+      namespace: {{ longhorn_namespace }}
+    type: Opaque
+    data:
+      AWS_ACCESS_KEY_ID: {{ _r2_desired.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: {{ _r2_desired.AWS_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINTS: {{ _r2_desired.AWS_ENDPOINTS }}
+      AWS_DEFAULT_REGION: {{ _r2_desired.AWS_DEFAULT_REGION }}
+    EOF
+  args:
+    executable: /bin/bash
+  register: _r2_apply
+  when: _r2_secret_changed | bool
+  changed_when: true
+  no_log: true
+
+# ------------------------------------------------------------
+# 2. BackupTarget (v1.11+ CRD)
+# ------------------------------------------------------------
+# v1.10 이전엔 setting/backup-target 에 직접 박았지만, 1.11+ 부터는 별도
+# BackupTarget 리소스로 분리됨. 'default' 이름이 클러스터 기본 backup target.
+
+- name: "backup | Render BackupTarget manifest"
+  ansible.builtin.template:
+    src: backuptarget.yaml.j2
+    dest: /etc/kubernetes/longhorn-backuptarget.yaml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: "backup | Apply BackupTarget"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      apply -f /etc/kubernetes/longhorn-backuptarget.yaml
+  args:
+    executable: /bin/bash
+  register: _bt_apply
+  changed_when: >-
+    'created' in _bt_apply.stdout
+    or 'configured' in _bt_apply.stdout
+  retries: 10
+  delay: 6
+  until: _bt_apply.rc == 0
+
+# ------------------------------------------------------------
+# 3. RecurringJob
+# ------------------------------------------------------------
+- name: "backup | Render RecurringJob manifest"
+  ansible.builtin.template:
+    src: recurringjob.yaml.j2
+    dest: /etc/kubernetes/longhorn-recurringjob.yaml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: "backup | Apply RecurringJob"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      apply -f /etc/kubernetes/longhorn-recurringjob.yaml
+  args:
+    executable: /bin/bash
+  register: _rj_apply
+  changed_when: >-
+    'created' in _rj_apply.stdout
+    or 'configured' in _rj_apply.stdout

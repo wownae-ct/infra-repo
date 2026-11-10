@@ -1,0 +1,195 @@
+---
+# ============================================================
+# common role - tasks (1차분)
+# ============================================================
+# 적용 범위: 전체 9대 VM
+#
+# 이번 단계:
+#   1. Timezone (Asia/Seoul)
+#   2. 기본 패키지 설치 (OS 분기)
+#   3. /etc/hosts 전체 노드 매핑
+#
+# DNS/NTP 클라이언트는 2차분에서 추가.
+# ============================================================
+
+# ---------- 1. Timezone ----------
+
+- name: Set system timezone
+  community.general.timezone:
+    name: "{{ common_timezone }}"
+  become: true
+  tags: [common, timezone]
+
+
+# ---------- 2. 기본 패키지 설치 ----------
+
+- name: Update apt cache (Debian/Ubuntu)
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+  when: ansible_os_family == "Debian"
+  async: 300       # 최대 5분
+  poll: 10         # 10초마다 확인
+  tags: [common, packages]
+
+- name: Install basic packages (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name: "{{ common_packages_basic + common_packages_debian }}"
+    state: present
+  become: true
+  when: ansible_os_family == "Debian"
+  tags: [common, packages]
+
+- name: Install EPEL repository (RedHat/Rocky)
+  ansible.builtin.dnf:
+    name: epel-release
+    state: present
+  become: true
+  when: ansible_os_family == "RedHat"
+  tags: [common, packages]
+
+- name: Install basic packages (RedHat/Rocky)
+  ansible.builtin.dnf:
+    name: "{{ common_packages_basic + common_packages_redhat }}"
+    state: present
+    update_cache: true
+  become: true
+  when: ansible_os_family == "RedHat"
+  tags: [common, packages]
+
+# ---------- 3. /etc/hosts ----------
+
+- name: Disable cloud-init manage_etc_hosts (if present)
+  ansible.builtin.lineinfile:
+    path: /etc/cloud/cloud.cfg
+    regexp: '^manage_etc_hosts:'
+    line: 'manage_etc_hosts: false'
+    state: present
+  become: true
+  failed_when: false
+  tags: [common, hosts]
+
+- name: Render /etc/hosts from inventory
+  ansible.builtin.template:
+    src: hosts.j2
+    dest: /etc/hosts
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  when: common_manage_etc_hosts | bool
+  tags: [common, hosts]
+
+# ---------- 4. DNS 클라이언트 (systemd-resolved) ----------
+
+- name: Configure systemd-resolved (non-bastion)
+  ansible.builtin.template:
+    src: resolved.conf.j2
+    dest: /etc/systemd/resolved.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  when:
+    - inventory_hostname != 'bastion'
+    - ansible_os_family == "Debian" 
+  notify: restart systemd-resolved
+  tags: [common, dns]
+
+- name: Configure systemd-resolved (bastion only)
+  ansible.builtin.template:
+    src: resolved.conf.j2
+    dest: /etc/systemd/resolved.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  when: inventory_hostname == 'bastion'
+  vars:
+    common_dns_servers: "{{ common_dns_servers_for_bastion }}"
+  notify: restart systemd-resolved
+  tags: [common, dns]
+
+- name: Ensure systemd-resolved enabled (Debian only)
+  ansible.builtin.systemd:
+    name: systemd-resolved
+    enabled: true
+    state: started
+  become: true
+  when:
+    - ansible_os_family == "Debian"
+    - not ansible_check_mode
+  tags: [common, dns]
+
+- name: Ensure /etc/resolv.conf is symlink to systemd-resolved (Debian)
+  ansible.builtin.file:
+    src: /run/systemd/resolve/stub-resolv.conf
+    dest: /etc/resolv.conf
+    state: link
+    force: true
+  become: true
+  when: ansible_os_family == "Debian"
+  tags: [common, dns]
+
+
+# ---------- 5. NTP 클라이언트 (chrony, 전체 통일) ----------
+
+# Ubuntu cloud image 의 기본 NTP 데몬은 systemd-timesyncd 라서
+# chrony 설치 전에 비활성화 (충돌 방지).
+- name: Disable systemd-timesyncd (Debian, before installing chrony)
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    enabled: false
+    state: stopped
+  become: true
+  when: ansible_os_family == "Debian"
+  failed_when: false
+  tags: [common, ntp]
+
+- name: Install chrony
+  ansible.builtin.package:
+    name: chrony
+    state: present
+  become: true
+  tags: [common, ntp]
+
+- name: Configure chrony (non-bastion)
+  ansible.builtin.template:
+    src: chrony-client.conf.j2
+    dest: "{{ '/etc/chrony/chrony.conf' if ansible_os_family == 'Debian' else '/etc/chrony.conf' }}"
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  when: inventory_hostname != 'bastion'
+  notify: restart chronyd
+  tags: [common, ntp]
+
+- name: Configure chrony (bastion only)
+  ansible.builtin.template:
+    src: chrony-client.conf.j2
+    dest: "{{ '/etc/chrony/chrony.conf' if ansible_os_family == 'Debian' else '/etc/chrony.conf' }}"
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  when: inventory_hostname == 'bastion'
+  vars:
+    common_ntp_servers: "{{ common_ntp_servers_for_bastion }}"
+  notify: restart chronyd
+  tags: [common, ntp]
+
+- name: Ensure chrony service enabled and running
+  ansible.builtin.systemd:
+    name: "{{ 'chrony' if ansible_os_family == 'Debian' else 'chronyd' }}"
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode    # ⟵ 이 줄 추가
+  tags: [common, ntp]    

@@ -1,0 +1,143 @@
+---
+# ============================================================
+# bastion role - knockd sub-task
+# ============================================================
+# port knocking 으로 외부 SSH (8282) 보호.
+#
+# 동작:
+#   1. /etc/knockd.conf - 시퀀스 정의 + iptables 명령
+#   2. /etc/default/knockd - START_KNOCKD=1 + KNOCKD_OPTS
+#   3. systemd 서비스 enable + start
+#   4. iptables INPUT 룰: eth1 으로 들어온 8282 기본 DROP
+#      knockd 가 시퀀스 받으면 임시 ACCEPT 룰을 INSERT.
+#
+# 의존성:
+#   - bastion ssh sub-task 가 먼저 적용되어 sshd 8282 listen 중이어야 함.
+#   - iptables-persistent 는 iptables sub-task 에서 이미 설치됨.
+# ============================================================
+
+# ---------- 패키지 ----------
+
+- name: Install knockd
+  ansible.builtin.apt:
+    name: knockd
+    state: present
+  become: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  tags: [bastion, knockd, packages]
+
+
+# ---------- 설정 파일 ----------
+
+- name: Render /etc/knockd.conf
+  ansible.builtin.template:
+    src: knockd/knockd.conf.j2
+    dest: /etc/knockd.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  notify: restart knockd
+  tags: [bastion, knockd, config]
+
+- name: Render /etc/default/knockd
+  ansible.builtin.template:
+    src: knockd/default-knockd.j2
+    dest: /etc/default/knockd
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  notify: restart knockd
+  tags: [bastion, knockd, config]
+
+
+# ---------- iptables INPUT 룰 (8282 기본 차단) ----------
+# 순서: knockd 가 -I INPUT 으로 ACCEPT 룰을 위에 삽입하므로,
+#       이 DROP 룰이 가장 아래에 있어도 동작 OK.
+
+- name: Ensure INPUT DROP for SSH (8282) from external interface
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: "{{ bastion_iptables_external_iface }}"
+    protocol: tcp
+    destination_port: "{{ bastion_ssh_port }}"
+    jump: DROP
+    state: present
+    comment: "bastion: SSH only via knockd from eth1"
+  become: true
+  notify: save iptables rules
+  tags: [bastion, knockd, iptables]
+
+
+# ---------- 서비스 ----------
+
+- name: Ensure knockd enabled and running
+  ansible.builtin.systemd:
+    name: knockd
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [bastion, knockd, service]
+
+# Handler 즉시 실행 (verify 전에 새 설정 반영 보장)
+- name: Flush handlers (knockd 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [bastion, knockd]
+
+
+# ---------- 검증 ----------
+
+- name: Verify - knockd service running
+  ansible.builtin.systemd:
+    name: knockd
+    state: started
+  become: true
+  register: knockd_running
+  changed_when: false
+  failed_when: knockd_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [bastion, knockd, verify]
+
+- name: Verify - knockd process listening on configured interface
+  ansible.builtin.shell: |
+    ps -eo args | grep -E "knockd.* -i {{ bastion_knockd_interface }}" | grep -v grep
+  args:
+    executable: /bin/bash
+  become: true
+  register: knockd_proc
+  changed_when: false
+  failed_when: knockd_proc.rc != 0
+  when: not ansible_check_mode
+  tags: [bastion, knockd, verify]
+
+- name: Verify - INPUT DROP rule for SSH from external interface exists
+  ansible.builtin.shell: |
+    iptables -L INPUT -n -v | awk '$3 == "DROP" && $6 == "{{ bastion_iptables_external_iface }}" && /tcp dpt:{{ bastion_ssh_port }}/'
+  args:
+    executable: /bin/bash
+  become: true
+  register: drop_rule_check
+  changed_when: false
+  failed_when: drop_rule_check.stdout == ""
+  when: not ansible_check_mode
+  tags: [bastion, knockd, verify]
+
+- name: Verify - knockd log has no parse errors
+  ansible.builtin.shell: |
+    journalctl -u knockd --since "1 minute ago" --no-pager 2>&1 \
+      | grep -iE "error|fail|invalid" \
+      | grep -v "iptables.*Bad rule" \
+      | head -5
+  args:
+    executable: /bin/bash
+  become: true
+  register: knockd_log_errors
+  changed_when: false
+  failed_when: knockd_log_errors.stdout != ""
+  when: not ansible_check_mode
+  tags: [bastion, knockd, verify]

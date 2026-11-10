@@ -1,0 +1,109 @@
+---
+# ============================================================
+# db role - defaults
+# ============================================================
+# db 의 모든 sub-task 가 공유하는 변수 모음.
+# group_vars/all.yml 또는 host_vars 에서 오버라이드 가능.
+#
+# 환경: Ubuntu 22.04 LTS (Hyper-V VM)
+#   - sda 40G : root (단일 디스크, /var/lib/mysql 도 여기)
+#   - 메모리 3.8GB (InnoDB buffer pool 1GB 권장)
+#
+# 백업 (Proxmox 환경) 과 NIC 매핑 다름:
+#   - 백업: ens18
+#   - 현재: eth0
+# ============================================================
+
+
+# ============================================================
+# SSH 보안 (sshd_config.d drop-in)
+# ============================================================
+# db VM 의 sshd 포트 변경 (22 → 2222).
+# storage 패턴 그대로.
+
+db_ssh_port: 2222
+db_ssh_keep_port_22: false   # 검증 후 false 로 (단계별 cutover)
+
+db_ssh_permit_root_login: "no"
+db_ssh_password_authentication: "no"
+db_ssh_pubkey_authentication: "yes"
+db_ssh_use_pam: "yes"
+db_ssh_x11_forwarding: "no"
+db_ssh_print_motd: "no"
+db_ssh_allow_tcp_forwarding: "yes"
+
+
+# ============================================================
+# 패키지
+# ============================================================
+db_packages:
+  - mariadb-server
+  - mariadb-client
+  - python3-pymysql       # ansible mysql_* 모듈 의존성 (필수)
+  - ufw
+
+
+# ============================================================
+# UFW (방화벽)
+# ============================================================
+# 백업 (ufw-verbose.txt) 기반.
+# 사라진 10.98.1.231 룰 제거.
+
+db_ufw_default_input: deny
+db_ufw_default_output: allow
+db_ufw_logging: low
+
+db_ufw_rules:
+  # bastion 으로부터 (SSH/DNS/NTP)
+  - { rule: allow, from: "10.98.1.230", port: "2222", proto: tcp,  comment: "bastion → ssh" }
+  - { rule: allow, from: "10.98.1.230", port: "53",   proto: any,  comment: "bastion → dns" }
+  - { rule: allow, from: "10.98.1.230", port: "123",  proto: udp,  comment: "bastion → ntp" }
+
+  # MariaDB (3306)
+  - { rule: allow, from: "10.98.1.240/28", port: "3306", proto: tcp, comment: "k8s 노드 → mariadb" }
+
+
+# ============================================================
+# MariaDB
+# ============================================================
+# 백업 (mariadb.conf.d/50-server.cnf) 기반.
+# 거의 모두 기본값. 핵심은 bind-address + utf8mb4 + buffer pool.
+
+db_mariadb_bind_address: "10.98.1.233"
+db_mariadb_port: 3306
+db_mariadb_datadir: /var/lib/mysql
+
+db_mariadb_character_set_server: utf8mb4
+db_mariadb_collation_server: utf8mb4_general_ci
+
+# 운영 안정성
+db_mariadb_expire_logs_days: 10
+
+# InnoDB 튜닝 (3.8GB 메모리 기준 약 25%)
+db_mariadb_innodb_buffer_pool_size: 1G
+
+# 추가 튜닝 (백업엔 없지만 운영 시 추천)
+db_mariadb_max_connections: 100
+
+
+# ============================================================
+# MariaDB Users / Grants
+# ============================================================
+# 백업 (mysql-grants.txt) 기반. 비밀번호 해시 그대로 재사용.
+# 사라진 10.98.1.231 host 제거.
+#
+# vault 변수:
+#   - vault_db_app_password_hash : '*<password-hash>'
+
+db_mariadb_databases:
+  - jiong_minihome
+
+db_mariadb_users:
+  - name: jiong_app
+    host: "10.10.%"
+    password_hash: "{{ vault_db_app_password_hash }}"
+    priv: "jiong_minihome.*:ALL"
+  - name: jiong_app
+    host: "20.20.20.%"
+    password_hash: "{{ vault_db_app_password_hash }}"
+    priv: "jiong_minihome.*:ALL"

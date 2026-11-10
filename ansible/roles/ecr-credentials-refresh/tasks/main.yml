@@ -1,0 +1,25 @@
+---
+# ============================================================
+# roles/ecr-credentials-refresh/tasks/main.yml — sub-task router
+# ============================================================
+# Sub-task:
+#   install : namespace + AWS creds Secret + RBAC + CronJob + 초기 Job
+#   verify  : ecr-credentials Secret 존재 + portfolio-web Ready 확인
+# ============================================================
+
+- name: "ecr | Assert ecr_sub_task is provided and valid"
+  ansible.builtin.assert:
+    that:
+      - ecr_sub_task is defined
+      - ecr_sub_task in _ecr_sub_tasks_allowed
+    fail_msg: >-
+      ecr_sub_task must be one of: {{ _ecr_sub_tasks_allowed | join(', ') }}
+      (got: {{ ecr_sub_task | default('UNDEFINED') }})
+    quiet: true
+  vars:
+    _ecr_sub_tasks_allowed:
+      - install
+      - verify
+
+- name: "ecr | Include sub-task → {{ ecr_sub_task }}"
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/{{ ecr_sub_task }}.yml"

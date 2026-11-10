@@ -1,0 +1,30 @@
+---
+# ============================================================
+# roles/argocd/tasks/main.yml — sub-task router
+# ============================================================
+# Sub-task:
+#   helm    : argocd chart install (server + controller + repo-server + dex + redis)
+#   verify  : 컴포넌트 Ready + admin secret 확인
+#
+# 추후:
+#   repo_credentials : infra-repo SSH key 등록 (argocd-repo-creds Secret)
+#   app_of_apps      : root-app.yaml apply
+# ============================================================
+
+- name: "argocd | Assert argocd_sub_task is provided and valid"
+  ansible.builtin.assert:
+    that:
+      - argocd_sub_task is defined
+      - argocd_sub_task in _argocd_sub_tasks_allowed
+    fail_msg: >-
+      argocd_sub_task must be one of: {{ _argocd_sub_tasks_allowed | join(', ') }}
+      (got: {{ argocd_sub_task | default('UNDEFINED') }})
+    quiet: true
+  vars:
+    _argocd_sub_tasks_allowed:
+      - helm
+      - repo_credentials
+      - verify
+
+- name: "argocd | Include sub-task → {{ argocd_sub_task }}"
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/{{ argocd_sub_task }}.yml"

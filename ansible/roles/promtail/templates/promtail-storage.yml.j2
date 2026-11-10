@@ -1,0 +1,106 @@
+# {{ ansible_managed }}
+# /etc/promtail/config.yml — storage 서버 (Rocky Linux 9)
+#
+# 수집 대상:
+#   1. minio.service (journal)
+#   2. MinIO audit (loki_push_api — MinIO 가 promtail 로 push)
+#   3. NFS / SMB 프로토콜 로그 (파일)
+#   4. 시스템 로그 (Rocky: messages, secure)
+#   5. SSH 무차별 공격 탐지 (secure)
+
+server:
+  http_listen_port: {{ promtail_http_port_storage }}
+  grpc_listen_port: 0
+
+positions:
+  filename: {{ promtail_positions_dir }}/positions-storage.yaml
+
+clients:
+  - url: {{ promtail_loki_push_url }}
+    tenant_id: {{ promtail_loki_tenant_id }}
+
+scrape_configs:
+  # ──────────────────────────────────────
+  # 1. MinIO (journal)
+  # ──────────────────────────────────────
+  - job_name: minio_journal
+    journal:
+      labels:
+        job: minio
+        host: {{ ansible_hostname }}
+      matches: _SYSTEMD_UNIT=minio.service
+    relabel_configs:
+      - source_labels: ['__journal__systemd_unit']
+        target_label: unit
+
+  # ──────────────────────────────────────
+  # 2. MinIO Audit (push 방식)
+  # ──────────────────────────────────────
+  # MinIO 가 HTTP POST 로 audit 이벤트를 직접 push.
+  # MinIO 의 audit webhook target = http://localhost:{{ promtail_minio_audit_port }}/loki/api/v1/push
+  - job_name: minio-audit
+    loki_push_api:
+      server:
+        http_listen_port: {{ promtail_minio_audit_port }}
+        grpc_listen_port: 0
+      labels:
+        job: minio-audit
+        host: {{ ansible_hostname }}
+      use_incoming_timestamp: true
+
+  # ──────────────────────────────────────
+  # 3. NFS / SMB 프로토콜 로그
+  # ──────────────────────────────────────
+  - job_name: storage_protocols
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: storage-services
+          host: {{ ansible_hostname }}
+          __path__: /var/log/{nfs-access.log,smb-access.log,samba/log.*}
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: '.*/(?P<protocol>nfs|smb)-access\.log'
+      - labels:
+          protocol:
+
+  # ──────────────────────────────────────
+  # 4. 시스템 로그 (Rocky Linux: messages, secure)
+  # ──────────────────────────────────────
+  - job_name: system-logs
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: system
+          host: {{ ansible_hostname }}
+          __path__: /var/log/{messages,secure}
+
+  # ──────────────────────────────────────
+  # 5. SSH 무차별 공격 탐지 (Rocky: /var/log/secure)
+  # ──────────────────────────────────────
+  - job_name: ssh-auth
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: ssh
+          host: {{ ansible_hostname }}
+          __path__: /var/log/secure
+    pipeline_stages:
+      - match:
+          selector: '{job="ssh"}'
+          stages:
+            - regex:
+                expression: '(?P<action>Failed password|Invalid user|Connection closed by authenticating user) .* from (?P<src_ip>\d+\.\d+\.\d+\.\d+)'
+            - labels:
+                action:
+                src_ip:
+      - match:
+          selector: '{job="ssh"}'
+          stages:
+            - regex:
+                expression: '(?P<action>Accepted (?:password|publickey)) for (?P<user>\S+) from (?P<src_ip>\d+\.\d+\.\d+\.\d+)'
+            - labels:
+                action:
+                user:
+                src_ip:

@@ -1,0 +1,121 @@
+---
+# ============================================================
+# storage role - nfs sub-task
+# ============================================================
+# nfs-utils 기반 NFS 서버.
+# - 공유 디렉토리 생성 (/data/nfs/{web,docker,jenkins,k8s})
+# - /etc/exports 렌더링
+# - nfs-server enable + start
+# - exportfs -ra 로 reload
+#
+# 의존성:
+#   - packages.yml: nfs-utils
+#   - lvm.yml:      /data/nfs 마운트
+#   - selinux.yml:  nfs_export_all_rw boolean
+#   - firewalld.yml: nfs/mountd/rpc-bind 서비스 허용
+# ============================================================
+
+# ---------- 공유 디렉토리 ----------
+# /data/nfs 는 lvm.yml 이 마운트.
+# 그 하위에 export 별 디렉토리 생성.
+
+- name: Ensure NFS export directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0777'
+  become: true
+  loop: "{{ storage_nfs_exports }}"
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [storage, nfs, dirs]
+
+# ---------- /etc/exports ----------
+
+- name: Render /etc/exports
+  ansible.builtin.template:
+    src: nfs/exports.j2
+    dest: /etc/exports
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  notify: reload nfs exports
+  tags: [storage, nfs, config]
+
+- name: Verify - /etc/exports syntax (dry-run)
+  ansible.builtin.command: exportfs -s
+  become: true
+  register: exports_syntax
+  changed_when: false
+  failed_when: exports_syntax.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, nfs, config]
+
+# ---------- 서비스 ----------
+
+- name: Ensure nfs-server enabled and running
+  ansible.builtin.systemd:
+    name: nfs-server
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [storage, nfs, service]
+
+# Handler 즉시 실행 (verify 전에 exports 반영 보장)
+- name: Flush handlers (nfs exports 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [storage, nfs]
+
+# ---------- 검증 ----------
+
+- name: Verify - nfs-server active
+  ansible.builtin.systemd:
+    name: nfs-server
+    state: started
+  become: true
+  register: nfs_running
+  changed_when: false
+  failed_when: nfs_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [storage, nfs, verify]
+
+- name: Verify - exports 등록 확인 (exportfs -v)
+  ansible.builtin.command: exportfs -v
+  become: true
+  register: exportfs_check
+  changed_when: false
+  failed_when: item.path not in exportfs_check.stdout
+  loop: "{{ storage_nfs_exports }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: not ansible_check_mode
+  tags: [storage, nfs, verify]
+
+- name: Verify - rpcinfo (nfs v4 등록)
+  ansible.builtin.shell: |
+    rpcinfo -p 127.0.0.1 | awk '/nfs/' | grep -q '4 '
+  args:
+    executable: /bin/bash
+  become: true
+  register: rpc_check
+  changed_when: false
+  failed_when: rpc_check.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, nfs, verify]
+
+- name: Verify - showmount (export list 조회)
+  ansible.builtin.command: showmount -e 127.0.0.1
+  become: true
+  register: showmount_check
+  changed_when: false
+  failed_when: item.path not in showmount_check.stdout
+  loop: "{{ storage_nfs_exports }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: not ansible_check_mode
+  tags: [storage, nfs, verify]

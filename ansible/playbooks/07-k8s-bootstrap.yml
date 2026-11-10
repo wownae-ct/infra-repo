@@ -1,0 +1,33 @@
+---
+# ============================================================
+# Phase 5c — kubeadm init (bootstrap master-01)
+# ============================================================
+# 대상: k8s-master-01 단독
+# 사양표 sub-task #5
+#
+# 사전 조건:
+#   - 5a 완료 (containerd, kubeadm 1.34.8 설치, sysctl/modules)
+#   - 5b 완료 (VIP 살아있음, HAProxy 8443 listening)
+#
+# 결과:
+#   - admin.conf 생성, master-01 control-plane 등록 (NotReady)
+#   - join 명령 2개가 hostvars 에 set_fact 됨
+#     → 같은 ansible-playbook 호출에서 join 단계로 이어져야 함
+#
+# 후속:
+#   08-k8s-control-plane.yml (5d — master-02, 03 join)
+#   09-k8s-workers.yml       (5e — worker join)
+# ============================================================
+
+- name: "Phase 5c | kubeadm init (bootstrap master-01)"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "5c → bootstrap"
+      ansible.builtin.include_role:
+        name: k8s
+      vars:
+        k8s_sub_task: bootstrap

@@ -1,0 +1,65 @@
+---
+# ============================================================
+# Phase 6c — Longhorn 부트스트랩
+# ============================================================
+# 사양표 단계:
+#   1. prerequisites (k8s_workers) — multipath, packages, 디스크 포맷+마운트
+#   2. helm           (master-01) — chart install
+#   3. disks          (master-01) — Longhorn Node CRD 에 디스크 등록
+#   4. backup         (master-01) — R2 secret + backup-target + RecurringJob
+#   5. verify         (master-01) — 종합 검증
+#
+# 후속:
+#   14-argocd.yml      (6d)
+#   15-argocd-apps.yml (6e)
+# ============================================================
+
+# ============================================================
+# Play 1: worker 사전준비
+# ============================================================
+- name: "Phase 6c-1 | Longhorn prerequisites (workers)"
+  hosts: k8s_workers
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "6c.1 → prerequisites"
+      ansible.builtin.include_role:
+        name: longhorn
+      vars:
+        longhorn_sub_task: prerequisites
+
+# ============================================================
+# Play 2: master-01 에서 helm + disks + backup + verify
+# ============================================================
+- name: "Phase 6c-2 | Longhorn install (master-01)"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "6c.2 → helm"
+      ansible.builtin.include_role:
+        name: longhorn
+      vars:
+        longhorn_sub_task: helm
+
+    - name: "6c.3 → disks"
+      ansible.builtin.include_role:
+        name: longhorn
+      vars:
+        longhorn_sub_task: disks
+
+    - name: "6c.4 → backup"
+      ansible.builtin.include_role:
+        name: longhorn
+      vars:
+        longhorn_sub_task: backup
+
+    - name: "6c.5 → verify"
+      ansible.builtin.include_role:
+        name: longhorn
+      vars:
+        longhorn_sub_task: verify

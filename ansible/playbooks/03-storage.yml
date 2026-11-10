@@ -1,0 +1,34 @@
+---
+# ============================================================
+# Phase 3: storage 전체 설정
+# ============================================================
+# storage role 의 모든 sub-task 를 순서대로 적용.
+#
+# 사용:
+#   # 전체 적용
+#   ansible-playbook -i inventories/hyperv/hosts.ini playbooks/03-storage.yml \
+#     --ask-vault-pass
+#
+#   # 특정 부분만
+#   --tags packages    패키지만
+#   --tags lvm         LVM 만
+#   --tags selinux     SELinux 만
+#   --tags firewalld   방화벽만
+#   --tags minio       MinIO 만
+#   --tags nfs         NFS 만
+#   --tags smb         SMB 만
+#
+#   # dry-run
+#   --check --diff
+#
+#   # 검증만
+#   --tags verify
+# ============================================================
+
+- name: Configure storage host
+  hosts: storage
+  become: true
+  gather_facts: true
+
+  roles:
+    - storage

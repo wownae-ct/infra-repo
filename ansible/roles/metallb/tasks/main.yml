@@ -1,0 +1,27 @@
+---
+# ============================================================
+# roles/metallb/tasks/main.yml — sub-task router
+# ============================================================
+# Sub-task:
+#   helm       : metallb chart install (controller + speaker)
+#   resources  : IPAddressPool + L2Advertisement apply (CRD 등록 후)
+#   verify     : controller/speaker Ready + IP pool 인식 확인
+# ============================================================
+
+- name: "metallb | Assert metallb_sub_task is provided and valid"
+  ansible.builtin.assert:
+    that:
+      - metallb_sub_task is defined
+      - metallb_sub_task in _metallb_sub_tasks_allowed
+    fail_msg: >-
+      metallb_sub_task must be one of: {{ _metallb_sub_tasks_allowed | join(', ') }}
+      (got: {{ metallb_sub_task | default('UNDEFINED') }})
+    quiet: true
+  vars:
+    _metallb_sub_tasks_allowed:
+      - helm
+      - resources
+      - verify
+
+- name: "metallb | Include sub-task → {{ metallb_sub_task }}"
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/{{ metallb_sub_task }}.yml"

@@ -1,0 +1,60 @@
+---
+# ============================================================
+# promtail role - defaults
+# ============================================================
+# VM 서버(bastion, storage, db)에 promtail agent 설치.
+# promtail → Loki push 로 로그 수집.
+#
+# 대상 서버별 OS:
+#   - bastion : Ubuntu 22.04 (syslog, auth.log)
+#   - storage : Rocky Linux 9 (messages, secure)
+#   - db      : Ubuntu 22.04 (syslog, auth.log)
+#
+# 각 서버 template 은 promtail_server_role 변수로 선택:
+#   promtail-bastion.yml.j2 / promtail-storage.yml.j2 / promtail-db.yml.j2
+#
+# Sub-task:
+#   install   : 바이너리 다운로드 + systemd 유닛
+#   configure : 서버별 config 템플릿 배포
+#   verify    : 서비스 active + 포트 listen + Loki push 응답
+# ============================================================
+
+# ============================================================
+# Promtail 버전 / 바이너리
+# ============================================================
+promtail_version: "3.4.2"
+promtail_arch: "linux-amd64"
+promtail_binary_url: "https://github.com/grafana/loki/releases/download/v{{ promtail_version }}/promtail-{{ promtail_arch }}.zip"
+promtail_binary_path: /usr/local/bin/promtail
+
+# ============================================================
+# 디렉토리 / 파일 경로
+# ============================================================
+promtail_config_dir: /etc/promtail
+promtail_config_path: "{{ promtail_config_dir }}/config.yml"
+promtail_positions_dir: /var/lib/promtail
+
+# ============================================================
+# Loki 연결
+# ============================================================
+# Istio ingressgateway (10.98.1.250) 뒤에 Loki 가 있으므로
+# HTTP Host header 가 loki.internal 이어야 VirtualService 매칭.
+# bastion → BIND9 로 resolve, storage/db → bastion DNS 경유.
+promtail_loki_push_url: "http://loki.lab.internal/loki/api/v1/push"
+promtail_loki_tenant_id: "default"
+
+# ============================================================
+# 서버 역할 (playbook 에서 play vars 로 지정)
+# ============================================================
+# promtail_server_role: bastion | storage | db
+# → templates/promtail-{{ promtail_server_role }}.yml.j2 선택
+
+# ============================================================
+# HTTP listen port (서버별 다르게 — 충돌 방지, 헬스체크 용)
+# ============================================================
+promtail_http_port_bastion: 9080
+promtail_http_port_storage: 9082
+promtail_http_port_db: 9083
+
+# storage 의 MinIO audit push 수신 포트
+promtail_minio_audit_port: 9081

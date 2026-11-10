@@ -1,0 +1,172 @@
+---
+# ============================================================
+# kps/tasks/verify.yml — sub-task 3
+# ============================================================
+# 대상: k8s-master-01
+# 종합 검증:
+#   1. helm release deployed
+#   2. CRDs 10개 등록
+#   3. Deployments Available (operator, kube-state-metrics, grafana)
+#   4. StatefulSets ready (prometheus, alertmanager)
+#   5. DaemonSet ready (node-exporter)
+#   6. PVCs Bound
+#   7. etcd ServiceMonitor 동작 확인 (선택)
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. helm release
+# ------------------------------------------------------------
+- name: "verify | helm release status"
+  ansible.builtin.shell: |
+    helm status {{ kps_helm_release_name }} \
+      --namespace {{ kps_namespace }} \
+      --kubeconfig {{ kps_kubeconfig }} \
+      -o json | python3 -c "import sys, json; print(json.load(sys.stdin)['info']['status'])"
+  args:
+    executable: /bin/bash
+  register: _v_status
+  changed_when: false
+  failed_when: _v_status.stdout != "deployed"
+
+# ------------------------------------------------------------
+# 2. CRDs
+# ------------------------------------------------------------
+- name: "verify | All expected CRDs exist"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ kps_kubeconfig }} \
+      get crd {{ item }} -o name
+  args:
+    executable: /bin/bash
+  loop: "{{ kps_expected_crds }}"
+  loop_control:
+    label: "{{ item }}"
+  changed_when: false
+
+# ------------------------------------------------------------
+# 3. Deployments Available
+# ------------------------------------------------------------
+- name: "verify | Deployments Available"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ kps_kubeconfig }}
+      -n {{ kps_namespace }}
+      wait --for=condition=Available deployment/{{ item }}
+      --timeout={{ kps_wait_timeout }}
+  loop: "{{ kps_components_deployments }}"
+  loop_control:
+    label: "{{ item }}"
+  changed_when: false
+
+# ------------------------------------------------------------
+# 4. StatefulSets ready (prometheus, alertmanager)
+# ------------------------------------------------------------
+- name: "verify | StatefulSets rollout"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ kps_kubeconfig }} \
+      -n {{ kps_namespace }} \
+      rollout status statefulset/{{ item }} \
+      --timeout={{ kps_wait_timeout }}
+  args:
+    executable: /bin/bash
+  loop: "{{ kps_components_statefulsets }}"
+  loop_control:
+    label: "{{ item }}"
+  changed_when: false
+
+# ------------------------------------------------------------
+# 5. DaemonSet rollout (node-exporter)
+# ------------------------------------------------------------
+- name: "verify | DaemonSet rollout"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ kps_kubeconfig }} \
+      -n {{ kps_namespace }} \
+      rollout status daemonset/{{ item }} \
+      --timeout={{ kps_wait_timeout }}
+  args:
+    executable: /bin/bash
+  loop: "{{ kps_components_daemonsets }}"
+  loop_control:
+    label: "{{ item }}"
+  changed_when: false
+
+# ------------------------------------------------------------
+# 6. PVCs Bound (prometheus, alertmanager, grafana)
+# ------------------------------------------------------------
+- name: "verify | List PVCs"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ kps_kubeconfig }} \
+      -n {{ kps_namespace }} \
+      get pvc -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{.spec.storageClassName}{"\n"}{end}'
+  args:
+    executable: /bin/bash
+  register: _v_pvcs
+  changed_when: false
+
+- name: "verify | Show PVCs"
+  ansible.builtin.debug:
+    msg: "{{ _v_pvcs.stdout_lines }}"
+
+- name: "verify | All PVCs Bound"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ kps_kubeconfig }} \
+      -n {{ kps_namespace }} \
+      get pvc -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' \
+    | sort -u
+  args:
+    executable: /bin/bash
+  register: _v_pvc_phases
+  changed_when: false
+  failed_when: _v_pvc_phases.stdout | trim != "Bound"
+
+# ------------------------------------------------------------
+# 7. Pods 상태 (정보 출력용)
+# ------------------------------------------------------------
+- name: "verify | List monitoring pods"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ kps_kubeconfig }} \
+      -n {{ kps_namespace }} \
+      get pods -o wide
+  args:
+    executable: /bin/bash
+  register: _v_pods
+  changed_when: false
+
+- name: "verify | Show monitoring pods"
+  ansible.builtin.debug:
+    msg: "{{ _v_pods.stdout_lines }}"
+
+# ------------------------------------------------------------
+# 8. etcd ServiceMonitor 가 target 잡고 있는지 (보고용)
+# ------------------------------------------------------------
+- name: "verify | etcd ServiceMonitor targets (Prometheus API)"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ kps_kubeconfig }} \
+      -n {{ kps_namespace }} \
+      get servicemonitor -l app=kube-prometheus-stack-kube-etcd -o name 2>/dev/null || \
+    kubectl --kubeconfig={{ kps_kubeconfig }} \
+      -n {{ kps_namespace }} \
+      get servicemonitor {{ kps_helm_release_name }}-kube-etcd -o name 2>/dev/null || \
+    echo "(ServiceMonitor not found by either query)"
+  args:
+    executable: /bin/bash
+  register: _v_sm_etcd
+  changed_when: false
+
+- name: "verify | Report etcd ServiceMonitor"
+  ansible.builtin.debug:
+    msg: "etcd ServiceMonitor: {{ _v_sm_etcd.stdout }}"
+
+# ------------------------------------------------------------
+# 9. 최종 리포트
+# ------------------------------------------------------------
+- name: "verify | Final report"
+  ansible.builtin.debug:
+    msg:
+      - "helm release        : {{ kps_helm_release_name }} {{ _v_status.stdout }}"
+      - "CRDs                : {{ kps_expected_crds | length }}개 등록"
+      - "Deployments         : operator / kube-state-metrics / grafana OK"
+      - "StatefulSets        : prometheus / alertmanager OK"
+      - "DaemonSet           : node-exporter OK"
+      - "PVCs                : all Bound"
+      - "다음 단계 (ArgoCD)  : prometheus / grafana child Application 이 곧 Synced 로 전환됨"
+      - "                      (3분 polling 후 또는 manual refresh)"

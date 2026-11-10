@@ -1,0 +1,99 @@
+---
+# ============================================================
+# storage role - ssh sub-task
+# ============================================================
+# sshd_config.d drop-in 으로 SSH 포트 변경 (22 → 2222) + 보안 정책.
+#
+# 안전 cutover 전략:
+#   1. storage_ssh_keep_port_22: true → 22 + 2222 둘 다 listen
+#   2. 2222 로 접속 테스트 (inventory ansible_port=2222 로 변경)
+#   3. 통과되면 storage_ssh_keep_port_22: false → 22 닫힘
+#
+# SELinux:
+#   sshd 가 2222 에 bind 하려면 SELinux port label 필요.
+#   Rocky 9 기본 정책에 ssh_port_t 에 22 만 있음 → 2222 추가.
+# ============================================================
+
+# ---------- SELinux: 2222 를 ssh_port_t 로 ----------
+
+- name: Ensure SSH custom port labeled as ssh_port_t
+  community.general.seport:
+    ports: "{{ storage_ssh_port }}"
+    proto: tcp
+    setype: ssh_port_t
+    state: present
+  become: true
+  tags: [storage, ssh, selinux]
+
+# ---------- sshd drop-in 설정 ----------
+
+- name: Render sshd_config.d drop-in
+  ansible.builtin.template:
+    src: ssh/sshd_drop_in.conf.j2
+    dest: /etc/ssh/sshd_config.d/50-storage.conf
+    owner: root
+    group: root
+    mode: '0600'
+    backup: true
+    validate: "sshd -t -f %s"
+  become: true
+  notify: restart sshd
+  tags: [storage, ssh, config]
+
+# Handler 즉시 실행 (sshd 재시작 즉시 적용)
+- name: Flush handlers (sshd 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [storage, ssh]
+
+# ---------- 검증 ----------
+
+- name: Verify - sshd 서비스 active
+  ansible.builtin.systemd:
+    name: sshd
+    state: started
+  become: true
+  register: sshd_running
+  changed_when: false
+  failed_when: sshd_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [storage, ssh, verify]
+
+- name: Verify - sshd listening on {{ storage_ssh_port }}
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":{{ storage_ssh_port }}\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: sshd_listen_new
+  changed_when: false
+  failed_when: sshd_listen_new.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, ssh, verify]
+
+- name: Verify - sshd listening on 22 (keep_port_22 = true)
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":22\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: sshd_listen_22
+  changed_when: false
+  failed_when: sshd_listen_22.rc != 0
+  when:
+    - not ansible_check_mode
+    - storage_ssh_keep_port_22 | bool
+  tags: [storage, ssh, verify]
+
+- name: Verify - sshd NOT listening on 22 (keep_port_22 = false)
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":22\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: sshd_no_22
+  changed_when: false
+  failed_when: sshd_no_22.rc == 0
+  when:
+    - not ansible_check_mode
+    - not (storage_ssh_keep_port_22 | bool)
+  tags: [storage, ssh, verify]

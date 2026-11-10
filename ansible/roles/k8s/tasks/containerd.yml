@@ -1,0 +1,95 @@
+---
+# ============================================================
+# roles/k8s/tasks/containerd.yml — sub-task 2
+# ============================================================
+# 대상: k8s_cluster (6대)
+# 호출: include_role: { name: k8s } vars: { k8s_sub_task: containerd }
+#
+# 전제: common (sub-task 1) 완료 — overlay 모듈 로드됨
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. 설치
+# ------------------------------------------------------------
+- name: "containerd | Install containerd + runc (apt default)"
+  ansible.builtin.apt:
+    name: "{{ k8s_containerd_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# ------------------------------------------------------------
+# 2. /etc/containerd 디렉토리 보장
+# ------------------------------------------------------------
+- name: "containerd | Ensure /etc/containerd directory"
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# ------------------------------------------------------------
+# 3. config.toml 배포
+# ------------------------------------------------------------
+- name: "containerd | Deploy config.toml"
+  ansible.builtin.template:
+    src: containerd/config.toml.j2
+    dest: "{{ k8s_containerd_config_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  notify: "Restart containerd"
+
+# ------------------------------------------------------------
+# 4. 활성화 + 시작
+# ------------------------------------------------------------
+- name: "containerd | Enable + start containerd"
+  ansible.builtin.systemd:
+    name: containerd
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# 검증 task가 dump를 읽으려면 restart가 이미 끝나 있어야 함
+- name: "containerd | Flush handlers now (apply restart before verify)"
+  ansible.builtin.meta: flush_handlers
+
+# ------------------------------------------------------------
+# 5. 검증
+# ------------------------------------------------------------
+- name: "containerd | Verify | active"
+  ansible.builtin.command: systemctl is-active containerd
+  register: _v_active
+  changed_when: false
+  failed_when: _v_active.stdout != "active"
+
+- name: "containerd | Verify | runtime config dump"
+  ansible.builtin.command: containerd config dump
+  register: _v_dump
+  changed_when: false
+
+- name: "containerd | Verify | SystemdCgroup = true is active"
+  ansible.builtin.assert:
+    that:
+      - "'SystemdCgroup = true' in _v_dump.stdout"
+    fail_msg: >-
+      SystemdCgroup is NOT true in active config on {{ inventory_hostname }}.
+      Check /etc/containerd/config.toml — kubelet will fail to create pod sandboxes.
+    quiet: true
+
+- name: "containerd | Verify | sandbox_image matches"
+  ansible.builtin.assert:
+    that:
+      - k8s_containerd_sandbox_image in _v_dump.stdout
+    fail_msg: >-
+      sandbox_image '{{ k8s_containerd_sandbox_image }}' not found in active config
+      on {{ inventory_hostname }}.
+    quiet: true
+
+- name: "containerd | Verify | ctr CLI works (socket OK)"
+  ansible.builtin.command: ctr -n k8s.io containers ls
+  register: _v_ctr
+  changed_when: false
+  failed_when: _v_ctr.rc != 0

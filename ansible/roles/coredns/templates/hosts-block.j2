@@ -1,0 +1,10 @@
+{{ coredns_hosts_marker_begin }}
+hosts {
+{% for entry in coredns_hosts_entries %}
+{% for h in entry.hostnames %}
+    {{ entry.ip }} {{ h }}
+{% endfor %}
+{% endfor %}
+    fallthrough
+}
+{{ coredns_hosts_marker_end }}

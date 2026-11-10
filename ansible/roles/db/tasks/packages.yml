@@ -1,0 +1,40 @@
+---
+# ============================================================
+# db role - packages sub-task
+# ============================================================
+# db VM 에서 필요한 모든 패키지 설치.
+# - mariadb-server, mariadb-client : DB 본체
+# - python3-pymysql : ansible mysql_* 모듈 의존성 (필수)
+# - ufw : 방화벽
+# ============================================================
+
+- name: Install db packages
+  ansible.builtin.apt:
+    name: "{{ db_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  tags: [db, packages]
+
+# ---------- 검증 ----------
+
+- name: Verify - 필수 바이너리 존재 확인
+  ansible.builtin.command: "which {{ item }}"
+  loop:
+    - mariadb
+    - mariadb-admin
+    - ufw
+  register: which_check
+  changed_when: false
+  failed_when: which_check.rc != 0
+  when: not ansible_check_mode
+  tags: [db, packages, verify]
+
+- name: Verify - python3-pymysql 모듈 import 가능
+  ansible.builtin.command: python3 -c "import pymysql"
+  changed_when: false
+  when: not ansible_check_mode
+  tags: [db, packages, verify]

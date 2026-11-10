@@ -1,0 +1,57 @@
+# {{ ansible_managed }}
+# /etc/haproxy/haproxy.cfg
+#
+# k8s API server LB.
+#   frontend  : *:{{ k8s_haproxy_frontend_port }} (TCP)  ← VIP {{ k8s_vip }} 가 keepalived 로 박힘
+#   backend   : masters:6443 (roundrobin)
+#   stats     : *:{{ k8s_haproxy_stats_port }} (HTTP, admin auth)
+
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    daemon
+    maxconn 4096
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+
+defaults
+    log     global
+    mode    tcp
+    option  tcplog
+    option  dontlognull
+    retries 3
+    timeout connect 5s
+    timeout client  30s
+    timeout server  30s
+    timeout check   2s
+
+# ----------------------------------------------------------------
+# Stats UI (HTTP, admin password from vault)
+# ----------------------------------------------------------------
+frontend stats
+    mode http
+    bind *:{{ k8s_haproxy_stats_port }}
+    stats enable
+    stats uri /
+    stats refresh 10s
+    stats admin if TRUE
+    stats auth {{ k8s_haproxy_stats_user }}:{{ k8s_haproxy_stats_pass }}
+
+# ----------------------------------------------------------------
+# k8s API server frontend (TCP)
+# kubeadm 의 controlPlaneEndpoint = VIP:{{ k8s_haproxy_frontend_port }}
+# VIP 가 keepalived 로 어느 master 든 한 곳에 박혀 있으므로,
+# 그 노드의 HAProxy 가 받아서 3 master 의 6443 으로 분산.
+# ----------------------------------------------------------------
+frontend k8s_api
+    bind *:{{ k8s_haproxy_frontend_port }}
+    mode tcp
+    option tcplog
+    default_backend k8s_api_masters
+
+backend k8s_api_masters
+    mode tcp
+    balance roundrobin
+    option tcp-check
+{% for h in groups['k8s_masters'] %}
+    server {{ h }} {{ hostvars[h].k8s_node_ip }}:6443 check fall 3 rise 2
+{% endfor %}

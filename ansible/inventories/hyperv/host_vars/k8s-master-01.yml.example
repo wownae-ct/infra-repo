@@ -1,0 +1,4 @@
+# 마스터 3대는 노드 IP와 keepalived 상태·우선순위만 다르게 둡니다(값은 예시).
+k8s_node_ip: 10.99.3.11
+k8s_keepalived_state: MASTER      # 나머지 마스터는 BACKUP
+k8s_keepalived_priority: 150      # 마스터마다 다르게

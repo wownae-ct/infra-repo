@@ -1,0 +1,25 @@
+---
+# ============================================================
+# roles/coredns/tasks/main.yml — sub-task router
+# ============================================================
+# Sub-task:
+#   patch   : ConfigMap 의 Corefile 안 hosts 블록 삽입/갱신 + rollout restart
+#   verify  : 임시 Pod 띄워서 nslookup 으로 도메인 resolve 확인
+# ============================================================
+
+- name: "coredns | Assert coredns_sub_task is provided and valid"
+  ansible.builtin.assert:
+    that:
+      - coredns_sub_task is defined
+      - coredns_sub_task in _coredns_sub_tasks_allowed
+    fail_msg: >-
+      coredns_sub_task must be one of: {{ _coredns_sub_tasks_allowed | join(', ') }}
+      (got: {{ coredns_sub_task | default('UNDEFINED') }})
+    quiet: true
+  vars:
+    _coredns_sub_tasks_allowed:
+      - patch
+      - verify
+
+- name: "coredns | Include sub-task → {{ coredns_sub_task }}"
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/{{ coredns_sub_task }}.yml"

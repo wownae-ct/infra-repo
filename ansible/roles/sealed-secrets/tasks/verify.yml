@@ -1,0 +1,87 @@
+---
+# ============================================================
+# sealed-secrets/tasks/verify.yml — sub-task 3
+# ============================================================
+# 1) controller pod Ready
+# 2) controller 로그에 "Searching for existing keys" → "Found X existing keys"
+#    (백업 키 인식 확인)
+# 3) (선택) 기존 SealedSecret 해독 테스트
+#    — 이건 SealedSecret 매니페스트가 신환경 클러스터에 들어와야 가능하므로
+#      이 role 에선 skip. Phase 6e (ArgoCD app sync) 직후에 검증.
+# ============================================================
+
+- name: "verify | Wait for controller deployment to be available"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ss_kubeconfig }}
+      -n {{ ss_namespace }}
+      wait --for=condition=Available deployment/sealed-secrets-controller
+      --timeout={{ ss_wait_timeout }}
+  register: _v_wait_deploy
+  changed_when: false
+  retries: 3
+  delay: 5
+  until: _v_wait_deploy.rc == 0
+
+- name: "verify | Wait for controller pod Ready"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ss_kubeconfig }}
+      -n {{ ss_namespace }}
+      wait --for=condition=Ready pods
+      -l {{ ss_controller_label_selector }}
+      --timeout={{ ss_wait_timeout }}
+  register: _v_wait_pod
+  changed_when: false
+
+- name: "verify | Fetch controller pod name"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ ss_kubeconfig }} \
+      -n {{ ss_namespace }} \
+      get pods -l {{ ss_controller_label_selector }} \
+      -o jsonpath='{.items[0].metadata.name}'
+  args:
+    executable: /bin/bash
+  register: _v_pod_name
+  changed_when: false
+
+- name: "verify | Read controller logs (first 100 lines, key-related)"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ss_kubeconfig }}
+      -n {{ ss_namespace }}
+      logs {{ _v_pod_name.stdout }} --tail=100
+  register: _v_logs
+  changed_when: false
+
+- name: "verify | Assert controller recognized existing keys"
+  ansible.builtin.assert:
+    that:
+      - "'Searching for bootstrap key' in _v_logs.stdout or
+         'New key written' not in _v_logs.stdout"
+      - "'HTTP server serving' in _v_logs.stdout or
+         'controller version' in _v_logs.stdout"
+    fail_msg: >-
+      Controller may have generated a NEW key instead of using the
+      restored backup keys. Check logs:
+      kubectl -n {{ ss_namespace }} logs {{ _v_pod_name.stdout }} | head -30
+    success_msg: "Controller initialized successfully (existing keys recognized)."
+    quiet: true
+
+- name: "verify | Final report — sealing keys in namespace"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ ss_kubeconfig }} \
+      -n {{ ss_namespace }} \
+      get secrets -l {{ ss_sealing_key_label }} \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+  args:
+    executable: /bin/bash
+  register: _v_final_keys
+  changed_when: false
+
+- name: "verify | Show final sealing keys"
+  ansible.builtin.debug:
+    msg:
+      - "Controller pod : {{ _v_pod_name.stdout }}"
+      - "Active sealing keys ({{ _v_final_keys.stdout_lines | length }}):"
+      - "{{ _v_final_keys.stdout_lines }}"

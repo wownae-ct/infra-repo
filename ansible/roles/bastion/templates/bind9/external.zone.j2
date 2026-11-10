@@ -1,0 +1,19 @@
+; /etc/bind/{{ bastion_bind9_external_domain }}.zone - managed by Ansible
+; External zone (DDNS 노출 도메인)
+
+$TTL    86400
+@       IN      SOA     {{ bastion_bind9_external_domain }}. {{ bastion_bind9_external_domain }}. (
+                              {{ bastion_bind9_external_serial }} ; Serial
+                              3600       ; Refresh
+                              1800       ; Retry
+                              604800     ; Expire
+                              86400 )    ; Minimum TTL
+
+; Name Servers
+@       IN      NS      {{ bastion_bind9_external_domain }}.
+
+; A Records
+{% for r in bastion_bind9_external_records %}
+{{ '%-7s' | format(r.name) }} IN      A       {{ r.ip }}{% if r.comment is defined %}        ; {{ r.comment }}{% endif %}
+
+{% endfor %}

@@ -1,0 +1,151 @@
+---
+# ============================================================
+# roles/k8s/tasks/common.yml — sub-task 1: OS 레벨 준비
+# ============================================================
+# 대상: k8s_cluster (masters + workers, 6대)
+# 호출: include_role: { name: k8s }  vars: { k8s_sub_task: common }
+#
+# 멱등성:
+#   - swap: /etc/fstab 변경은 한 번만, swapoff -a 는 매번 OK
+#   - modules: modprobe + /etc/modules-load.d 둘 다 처리 (현재+영구)
+#   - sysctl: template diff로 변경 시에만 notify → "Reload sysctl"
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Swap off (kubeadm 필수)
+# ------------------------------------------------------------
+# kubeadm은 swap이 켜져 있으면 init/join을 거부한다 (1.22+에서 완화됐지만
+# 운영 권장은 여전히 OFF). cloud-init 으로 생성된 VM 은 swap 이 켜져 있을 수
+# 있으므로 명시적으로 끈다.
+
+- name: "common | Check current swap state"
+  ansible.builtin.command: swapon --show
+  register: _swap_state
+  changed_when: false
+  failed_when: false
+  # changed_when:false → 조회 task는 changed 표시 안 함
+  # failed_when:false  → swap 없으면 exit 0이지만 일부 환경에서 다를 수 있어 안전장치
+
+- name: "common | Disable swap (immediate)"
+  ansible.builtin.command: swapoff -a
+  when: _swap_state.stdout | length > 0
+  changed_when: true
+
+- name: "common | Disable swap in /etc/fstab (persistent)"
+  ansible.builtin.replace:
+    path: /etc/fstab
+    # swap 라인 패턴: '... <fs> swap <opts>' 형태를 주석 처리
+    regexp: '^([^#].*\sswap\s+.*)$'
+    replace: '# \1   # disabled by ansible (k8s)'
+    backup: true
+  # backup:true → /etc/fstab.YYYYMMDD-... 백업 자동 생성 (재해 대비)
+
+# ------------------------------------------------------------
+# 2. 공통 패키지 (kubeadm 의존성)
+# ------------------------------------------------------------
+# defaults/main.yml 의 k8s_common_packages:
+#   apt-transport-https, ca-certificates, curl, gnupg → kubernetes apt repo 추가용
+#   socat, conntrack, ebtables, ipset                 → kubeadm/kube-proxy/cilium 런타임 의존성
+
+- name: "common | Install OS-level prerequisite packages"
+  ansible.builtin.apt:
+    name: "{{ k8s_common_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  # cache_valid_time:3600 → 최근 1시간 안에 apt update 했으면 스킵 (속도)
+
+# ------------------------------------------------------------
+# 3. Kernel modules (overlay, br_netfilter)
+# ------------------------------------------------------------
+# - 영구: /etc/modules-load.d/k8s.conf (템플릿 B-1)
+# - 즉시: modprobe (재부팅 없이 바로 활성화)
+
+- name: "common | Deploy modules-load.d/k8s.conf (persistent)"
+  ansible.builtin.template:
+    src: modules/k8s.conf.j2
+    dest: /etc/modules-load.d/k8s.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: "Reload modules"
+
+- name: "common | Check which kernel modules are already loaded"
+  ansible.builtin.shell: |
+    set -o pipefail
+    lsmod | awk '{print $1}'
+  args:
+    executable: /bin/bash
+  register: _loaded_modules
+  changed_when: false
+
+- name: "common | Load kernel modules now (immediate)"
+  ansible.builtin.command:
+    cmd: "modprobe {{ item }}"
+  loop: "{{ k8s_kernel_modules }}"
+  when: item not in _loaded_modules.stdout_lines
+  changed_when: true
+  # community.general.modprobe 의 알려진 quirk 우회:
+  # 그 모듈이 "이미 로드됨"으로 오판하고 실제 modprobe 를 건너뛰는 경우 존재.
+  # 직접 lsmod 로 현재 상태 확인 후 명시적으로 modprobe 호출.    
+
+# ------------------------------------------------------------
+# 4. sysctl (k8s 표준 + Cilium override)
+# ------------------------------------------------------------
+# - 영구: /etc/sysctl.d/k8s.conf (템플릿 B-2)
+# - 즉시: notify된 핸들러 "Reload sysctl" 이 sysctl --system 실행
+
+- name: "common | Deploy sysctl.d/k8s.conf (persistent)"
+  ansible.builtin.template:
+    src: sysctl/k8s.conf.j2
+    dest: /etc/sysctl.d/k8s.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: "Reload sysctl"
+
+# 핸들러는 play 끝에서 실행되지만, 그 전에 검증 task가 sysctl 값을 읽어야 하므로
+# 여기서 강제로 flush. (이게 없으면 검증이 옛날 값으로 통과/실패할 수 있음)
+- name: "common | Flush handlers now (apply sysctl before verify)"
+  ansible.builtin.meta: flush_handlers
+
+# ------------------------------------------------------------
+# 5. 검증 (assert 기반)
+# ------------------------------------------------------------
+# 한 task라도 어긋나면 즉시 fail → 후속 sub-task(containerd, kube_packages 등)가
+# 잘못된 상태에서 돌아가는 것을 막는다. fail-fast 정책.
+
+- name: "common | Verify | swap is off"
+  ansible.builtin.command: swapon --show
+  register: _v_swap
+  changed_when: false
+  failed_when: _v_swap.stdout | length > 0
+
+- name: "common | Verify | required kernel modules loaded"
+  ansible.builtin.shell: |
+    set -o pipefail
+    lsmod | awk '{print $1}'
+  args:
+    executable: /bin/bash
+  register: _v_lsmod
+  changed_when: false
+
+- name: "common | Verify | assert each module is present"
+  ansible.builtin.assert:
+    that:
+      - item in _v_lsmod.stdout_lines
+    fail_msg: "Kernel module '{{ item }}' is NOT loaded on {{ inventory_hostname }}"
+    quiet: true
+  loop: "{{ k8s_kernel_modules }}"
+
+- name: "common | Verify | sysctl values applied"
+  ansible.builtin.shell: |
+    set -o pipefail
+    sysctl -n {{ item.key }}
+  args:
+    executable: /bin/bash
+  register: _v_sysctl
+  changed_when: false
+  loop: "{{ (k8s_sysctl_params | combine(k8s_sysctl_cilium_params)) | dict2items }}"
+  failed_when: _v_sysctl.stdout | trim != (item.value | string)
+  # 표준 3개 + cilium 1개 = 4개 키 모두 기대값과 일치하는지

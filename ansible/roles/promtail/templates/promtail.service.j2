@@ -1,0 +1,32 @@
+# {{ ansible_managed }}
+# /etc/systemd/system/promtail.service
+# Promtail log agent — {{ promtail_server_role }} 서버용.
+#
+# root 로 실행 (journal + 다양한 로그 파일 접근 필요).
+# systemd hardening 으로 권한 제한.
+
+[Unit]
+Description=Promtail Log Agent ({{ promtail_server_role }})
+Documentation=https://grafana.com/docs/loki/latest/clients/promtail/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+ExecStart={{ promtail_binary_path }} -config.file={{ promtail_config_path }}
+
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# 보안 강화 (root 이지만 불필요한 권한 차단)
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

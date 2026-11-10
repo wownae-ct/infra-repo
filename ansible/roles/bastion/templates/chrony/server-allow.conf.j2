@@ -1,0 +1,7 @@
+# /etc/chrony/conf.d/bastion-server.conf - managed by Ansible (bastion role)
+# bastion 을 NTP 서버로 (다른 VM 이 시간 동기화 받을 수 있게)
+# 클라이언트 설정은 common role 의 chrony.conf 에서 관리.
+
+{% for subnet in bastion_chrony_allow_subnets %}
+allow {{ subnet }}
+{% endfor %}

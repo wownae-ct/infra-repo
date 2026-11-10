@@ -1,0 +1,257 @@
+---
+# ============================================================
+# storage role - minio sub-task
+# ============================================================
+# MinIO single-node single-drive.
+# - 시스템 유저 minio-user 생성
+# - binary 다운로드 (/usr/local/bin/minio)
+# - 환경변수 (/etc/default/minio)
+# - systemd unit (/etc/systemd/system/minio.service)
+# - 서비스 enable + start
+#
+# Buckets 는 별도 작업 (이관 시점에 mc 로).
+#
+# 의존성:
+#   - packages.yml: curl, tar
+#   - lvm.yml:      /data/minio 마운트
+#   - selinux.yml:  container_file_t 라벨링
+#   - firewalld.yml: 9000/9001 허용
+# ============================================================
+
+# ---------- 시스템 유저/그룹 ----------
+
+- name: Ensure minio group
+  ansible.builtin.group:
+    name: "{{ storage_minio_group }}"
+    system: true
+    state: present
+  become: true
+  tags: [storage, minio, user]
+
+- name: Ensure minio user
+  ansible.builtin.user:
+    name: "{{ storage_minio_user }}"
+    group: "{{ storage_minio_group }}"
+    system: true
+    shell: /sbin/nologin
+    home: /var/lib/minio
+    create_home: false
+    state: present
+  become: true
+  tags: [storage, minio, user]
+
+# ---------- 데이터 디렉토리 소유권 ----------
+# /data/minio 는 lvm.yml 에서 이미 mount 됨 (root:root 0755).
+# MinIO 가 쓸 수 있게 소유권 변경.
+
+- name: Ensure /data/minio owned by minio user
+  ansible.builtin.file:
+    path: "{{ storage_minio_data_dir }}"
+    state: directory
+    owner: "{{ storage_minio_user }}"
+    group: "{{ storage_minio_group }}"
+    mode: '0750'
+  become: true
+  tags: [storage, minio, data]
+
+# ---------- Binary 다운로드 ----------
+# 이미 같은 binary 있으면 changed 안 됨 (force=false 기본값).
+# 운영 안정 후엔 version pin 권장 (URL 에 버전 박기).
+
+- name: Download MinIO binary
+  ansible.builtin.get_url:
+    url: "{{ storage_minio_binary_url }}"
+    dest: "{{ storage_minio_binary_path }}"
+    owner: root
+    group: root
+    mode: '0755'
+    force: false
+  become: true
+  notify: restart minio
+  tags: [storage, minio, binary]
+
+# ---------- 환경변수 파일 ----------
+
+- name: Render MinIO env file
+  ansible.builtin.template:
+    src: minio/minio.env.j2
+    dest: "{{ storage_minio_config_env }}"
+    owner: root
+    group: "{{ storage_minio_group }}"
+    mode: '0640'
+    backup: true
+  become: true
+  notify: restart minio
+  tags: [storage, minio, config]
+
+# ---------- systemd unit ----------
+
+- name: Render MinIO systemd unit
+  ansible.builtin.template:
+    src: minio/minio.service.j2
+    dest: "{{ storage_minio_systemd_unit }}"
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  notify:
+    - daemon-reload
+    - restart minio
+  tags: [storage, minio, systemd]
+
+# ---------- 서비스 ----------
+
+- name: Ensure MinIO enabled and running
+  ansible.builtin.systemd:
+    name: minio
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [storage, minio, service]
+
+# Handler 즉시 실행 (verify 전에 새 설정 반영 보장)
+- name: Flush handlers (minio 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [storage, minio]
+
+# ---------- mc (MinIO Client) ----------
+
+- name: Download mc binary
+  ansible.builtin.get_url:
+    url: "{{ storage_mc_binary_url }}"
+    dest: "{{ storage_mc_binary_path }}"
+    owner: root
+    group: root
+    mode: '0755'
+    force: false
+  become: true
+  tags: [storage, minio, mc]
+
+# ---------- 앱 유저 추가 ----------
+# portfolio-web SealedSecret의 MINIO_ACCESS_KEY/SECRET_KEY와 동일.
+# root credential은 유지, 앱 전용 유저를 별도 생성.
+
+- name: Set mc alias (root)
+  ansible.builtin.shell: |
+    {{ storage_mc_binary_path }} alias set local \
+      http://127.0.0.1:{{ storage_minio_api_port }} \
+      '{{ storage_minio_root_user }}' \
+      '{{ storage_minio_root_password }}' --api S3v4
+  become: true
+  changed_when: false
+  no_log: true
+  tags: [storage, minio, mc]
+
+- name: Check if app user exists
+  ansible.builtin.shell: |
+    {{ storage_mc_binary_path }} admin user list local --json \
+      | grep -q '"accessKey":"{{ storage_minio_app_access_key }}"'
+  become: true
+  register: mc_user_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags: [storage, minio, mc]
+
+- name: Create app user (if not exists)
+  ansible.builtin.shell: |
+    {{ storage_mc_binary_path }} admin user add local \
+      '{{ storage_minio_app_access_key }}' \
+      '{{ storage_minio_app_secret_key }}'
+  become: true
+  register: mc_user_add
+  changed_when: mc_user_add.rc == 0
+  when: mc_user_check.rc != 0
+  no_log: true
+  tags: [storage, minio, mc]
+
+- name: Attach readwrite policy to app user
+  ansible.builtin.shell: |
+    {{ storage_mc_binary_path }} admin policy attach local readwrite \
+      --user '{{ storage_minio_app_access_key }}'
+  become: true
+  changed_when: false
+  no_log: true
+  tags: [storage, minio, mc]
+
+# ---------- 검증 ----------
+
+- name: Verify - MinIO binary executable
+  ansible.builtin.command: "{{ storage_minio_binary_path }} --version"
+  become: true
+  register: minio_version
+  changed_when: false
+  failed_when: minio_version.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, minio, verify]
+
+- name: Verify - MinIO service active
+  ansible.builtin.systemd:
+    name: minio
+    state: started
+  become: true
+  register: minio_running
+  changed_when: false
+  failed_when: minio_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [storage, minio, verify]
+
+- name: Verify - MinIO API port 9000 listening
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":{{ storage_minio_api_port }}\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: minio_api_listen
+  changed_when: false
+  failed_when: minio_api_listen.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, minio, verify]
+
+- name: Verify - MinIO Console port 9001 listening
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":{{ storage_minio_console_port }}\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: minio_console_listen
+  changed_when: false
+  failed_when: minio_console_listen.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, minio, verify]
+
+- name: Verify - MinIO health endpoint (live)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ storage_minio_api_port }}/minio/health/live"
+    method: GET
+    status_code: 200
+    timeout: 5
+  become: true
+  register: minio_health
+  changed_when: false
+  retries: 6
+  delay: 5
+  until: minio_health.status == 200
+  when: not ansible_check_mode
+  tags: [storage, minio, verify]
+
+- name: Verify - app user can access bucket
+  ansible.builtin.shell: |
+    {{ storage_mc_binary_path }} alias set apptest \
+      http://127.0.0.1:{{ storage_minio_api_port }} \
+      '{{ storage_minio_app_access_key }}' \
+      '{{ storage_minio_app_secret_key }}' --api S3v4 && \
+    {{ storage_mc_binary_path }} ls apptest/portfolio-web/ > /dev/null 2>&1 && \
+    echo "OK" || echo "FAIL"
+  become: true
+  register: mc_app_verify
+  changed_when: false
+  no_log: true
+  tags: [storage, minio, mc, verify]
+
+- name: Verify - app user result
+  ansible.builtin.debug:
+    msg: "MinIO app user: {{ (mc_app_verify.stdout | trim == 'OK') | ternary('✅ readwrite OK', '❌ 접근 실패') }}"
+  tags: [storage, minio, mc, verify]

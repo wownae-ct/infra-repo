@@ -1,0 +1,160 @@
+---
+# ============================================================
+# bastion role - bind9 sub-task
+# ============================================================
+# 내부 DNS 서버 (BIND9) 설치 및 설정.
+#
+# 모든 template 은 validate 옵션으로 syntax 검사 후 배포.
+# 잘못된 설정으로 BIND9 다운되는 사고 방지.
+# ============================================================
+
+# ---------- 패키지 ----------
+
+- name: Install BIND9 packages
+  ansible.builtin.apt:
+    name:
+      - bind9
+      - bind9-utils
+      - bind9-doc
+    state: present
+  become: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  tags: [bastion, bind9, packages]
+
+
+# ---------- 설정 파일 ----------
+
+- name: Render named.conf.options
+  ansible.builtin.template:
+    src: bind9/named.conf.options.j2
+    dest: /etc/bind/named.conf.options
+    owner: root
+    group: bind
+    mode: '0644'
+    backup: true
+    validate: "named-checkconf %s"
+  become: true
+  notify: restart bind9
+  tags: [bastion, bind9, config]
+
+- name: Render named.conf.local (zone declarations)
+  ansible.builtin.template:
+    src: bind9/named.conf.local.j2
+    dest: /etc/bind/named.conf.local
+    owner: root
+    group: bind
+    mode: '0644'
+    backup: true
+    validate: "named-checkconf %s"
+  become: true
+  notify: reload bind9
+  tags: [bastion, bind9, config]
+
+
+# ---------- Zone 파일 ----------
+
+- name: Render external zone ({{ bastion_bind9_external_domain }})
+  ansible.builtin.template:
+    src: bind9/external.zone.j2
+    dest: "/etc/bind/{{ bastion_bind9_external_domain }}.zone"
+    owner: root
+    group: bind
+    mode: '0644'
+    backup: true
+    validate: "named-checkzone {{ bastion_bind9_external_domain }} %s"
+  become: true
+  notify: reload bind9
+  tags: [bastion, bind9, zones]
+
+- name: Render internal zone ({{ bastion_bind9_internal_domain }})
+  ansible.builtin.template:
+    src: bind9/internal.zone.j2
+    dest: "/etc/bind/{{ bastion_bind9_internal_domain }}.zone"
+    owner: root
+    group: bind
+    mode: '0644'
+    backup: true
+    validate: "named-checkzone {{ bastion_bind9_internal_domain }} %s"
+  become: true
+  notify: reload bind9
+  tags: [bastion, bind9, zones]
+
+
+# ---------- 서비스 ----------
+
+- name: Ensure BIND9 enabled and running
+  ansible.builtin.systemd:
+    name: named
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [bastion, bind9, service]
+
+# Handler 즉시 실행 (verify 전에 새 설정 반영 보장)
+- name: Flush handlers (bind9 reload/restart 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [bastion, bind9]
+
+# ---------- DNS 클라이언트 전환 (BIND9 → 자기 자신) ----------
+# common role 에서는 부트스트랩 안전상 외부 DNS (1.1.1.1, 8.8.8.8) 만 설정.
+# BIND9 가 뜬 이후에는 자기 자신을 1순위로 (내부 도메인 resolve 가능하게).
+
+- name: Configure systemd-resolved to use local BIND9
+  ansible.builtin.copy:
+    dest: /etc/systemd/resolved.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+    content: |
+      # /etc/systemd/resolved.conf - managed by Ansible (bastion role, post-BIND9)
+      [Resolve]
+      DNS=127.0.0.1 1.1.1.1 8.8.8.8
+      FallbackDNS=1.1.1.1 8.8.8.8
+      Domains=lab.internal
+      DNSStubListener=yes
+      Cache=yes
+      DNSSEC=no
+  become: true
+  notify: restart systemd-resolved
+  tags: [bastion, bind9, dns]
+
+- name: Ensure systemd-resolved restarted
+  ansible.builtin.meta: flush_handlers
+  tags: [bastion, bind9, dns]
+
+# ---------- 검증 ----------
+
+- name: Verify - BIND9 service running
+  ansible.builtin.systemd:
+    name: named
+    state: started
+  register: bind9_running
+  changed_when: false
+  become: true
+  when: not ansible_check_mode
+  tags: [bastion, bind9, verify]
+
+- name: Verify - Internal zone resolves
+  ansible.builtin.command: dig @127.0.0.1 jenkins.{{ bastion_bind9_internal_domain }} +short
+  register: dns_internal
+  changed_when: false
+  failed_when: dns_internal.stdout | length == 0
+
+- name: Verify - External zone resolves
+  ansible.builtin.command: dig @127.0.0.1 str.{{ bastion_bind9_external_domain }} +short
+  register: dns_external
+  changed_when: false
+  failed_when: dns_external.stdout != "10.98.1.232"
+  when: not ansible_check_mode
+  tags: [bastion, bind9, verify]
+
+- name: Verify - Forwarder works (external domain)
+  ansible.builtin.command: dig @127.0.0.1 google.com +short
+  register: dns_forward
+  changed_when: false
+  failed_when: dns_forward.stdout_lines | length < 1
+  when: not ansible_check_mode
+  tags: [bastion, bind9, verify]

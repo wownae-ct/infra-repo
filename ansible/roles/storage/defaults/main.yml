@@ -1,0 +1,291 @@
+---
+# ============================================================
+# storage role - defaults
+# ============================================================
+# storage 의 모든 sub-task 가 공유하는 변수 모음.
+# group_vars/all.yml 또는 host_vars 에서 오버라이드 가능.
+#
+# 환경: Rocky Linux 9 (Hyper-V VM)
+#   - sdh                   : root (단일, 15G - 절대 건드리지 않음)
+#   - sda                   : 미사용 (15G, root RAID 짝꿍이었을 가능성)
+#   - sdb + sdc + sdd + sde : vg_s3  → lv_minio → /data/minio (xfs, 40G)
+#   - sdf                   : vg_nfs → lv_nfs   → /data/nfs   (xfs, 30G)
+#   - sdg                   : vg_smb → lv_smb   → /data/smb   (xfs, 30G)
+#
+# 백업 (Proxmox 환경) 과 디스크 매핑이 다름:
+#   - 백업: sda+sdb RAID1 root, sdc+sdd+sdf+sdh vg_s3, sde vg_nfs, sdg vg_smb
+#   - 현재: sdh root, sdb+sdc+sdd+sde vg_s3, sdf vg_nfs, sdg vg_smb
+#   Hyper-V SCSI 컨트롤러 LUN 순서가 Proxmox 와 달라서 발생.
+#
+# NIC 매핑도 다름:
+#   - 백업: ens18
+#   - 현재: eth0 (Rocky 9 기본 + NetworkManager 통제)
+# ============================================================
+
+
+# ============================================================
+# SSH 보안 (sshd_config.d drop-in)
+# ============================================================
+# storage VM 의 sshd 포트 변경 (22 → 2222).
+# bastion 의 SSH 보안 정책과 동일한 패턴 (drop-in 으로 박음).
+#
+# 재배포 시 안전상 22 도 LISTEN 유지하다가 검증 후 false 로.
+# - true:  Port 22 + Port 2222 둘 다 listen
+# - false: Port 2222 만 listen (22 닫힘)
+
+storage_ssh_port: 2222
+
+# 검증 후 false 로 (단계별 cutover)
+storage_ssh_keep_port_22: false
+
+storage_ssh_permit_root_login: "no"
+storage_ssh_password_authentication: "no"
+storage_ssh_pubkey_authentication: "yes"
+storage_ssh_use_pam: "yes"
+storage_ssh_x11_forwarding: "no"
+storage_ssh_print_motd: "no"
+storage_ssh_allow_tcp_forwarding: "yes"
+
+
+# ============================================================
+# 패키지
+# ============================================================
+storage_packages:
+  - lvm2
+  - xfsprogs
+  - nfs-utils
+  - samba
+  - samba-common-tools
+  - samba-client
+  - cifs-utils
+  - firewalld
+  - policycoreutils-python-utils   # semanage 용
+  - python3-libsemanage             # ansible selinux 모듈 의존
+  - tar
+  - curl
+  - wget
+  - rsync
+
+
+# ============================================================
+# LVM (수동 구성 위험 → community.general 모듈로 idempotent 자동화)
+# ============================================================
+# 현재 환경 (Hyper-V) 의 디스크 매핑 기준.
+#
+# WARNING:
+#   - 새 VM 첫 적용 시점에만 의미가 있음.
+#   - cutover 후 운영 중인 storage 에는 재실행 금지 → toggle off.
+#   - 디스크 매핑은 환경에 따라 다를 수 있으니 host_vars 에서 오버라이드 가능.
+
+storage_lvm_enabled: false   # cutover 후 false 로 (재실행 시 데이터 손상 방지)
+
+storage_lvm_vgs:
+  - name: vg_s3
+    pvs:
+      - /dev/sdb
+      - /dev/sdc
+      - /dev/sdd
+      - /dev/sde
+  - name: vg_nfs
+    pvs:
+      - /dev/sdf
+  - name: vg_smb
+    pvs:
+      - /dev/sdg
+
+storage_lvm_lvs:
+  - { vg: vg_s3,  lv: lv_minio, size: 100%VG, fs: xfs, mount: /data/minio }
+  - { vg: vg_nfs, lv: lv_nfs,   size: 100%VG, fs: xfs, mount: /data/nfs   }
+  - { vg: vg_smb, lv: lv_smb,   size: 100%VG, fs: xfs, mount: /data/smb   }
+
+# ============================================================
+# SELinux
+# ============================================================
+# 백업 (selinux-fcontext + selinux-ports + selinux-booleans) 기반.
+
+storage_selinux_state: enforcing
+
+# fcontext: MinIO data dir 은 container_file_t 로 (백업 fcontext.txt 참조)
+storage_selinux_fcontexts:
+  - { target: "/data/minio(/.*)?", setype: "container_file_t" }
+
+# Ports:
+#   - 9000 은 기본 http_port_t 정책에 포함됨 (백업 selinux-ports.txt 확인)
+#   - 9001 만 추가 등록
+#   - 2222 는 ssh sub-task 에서 별도 등록 (ssh_port_t)
+storage_selinux_ports:
+  - { port: 9001, proto: tcp, setype: http_port_t }
+
+# Booleans
+storage_selinux_booleans:
+  - { name: nfs_export_all_rw,   state: true }
+  - { name: samba_export_all_rw, state: true }
+
+
+# ============================================================
+# firewalld (zone 3개)
+# ============================================================
+# 백업 (firewalld-all-zones) 기반.
+# 사라진 10.98.1.234 rich rule 제거.
+#
+# Zone 설계:
+#   - internal         (eth0 바인딩)         : NFS, SSH, k8s 대역 MinIO API
+#   - internal-bastion (source=10.98.1.230) : bastion → MinIO + SMB + SSH (ProxyJump 통과용)
+#   - trusted          (tun0 바인딩)         : OpenVPN 클라이언트 SMB 접근
+
+storage_firewalld_default_zone: internal-bastion
+
+storage_firewalld_zones:
+  - name: internal
+    interface: eth0
+    services:
+      - cockpit
+      - dhcpv6-client
+      - mdns
+      - mountd
+      - nfs
+      - rpc-bind
+      - ssh
+    ports:
+      - { port: 2222, protocol: tcp }
+    rich_rules:
+      - 'rule family="ipv4" source address="10.98.1.240/28" port port="9000" protocol="tcp" accept'
+
+  - name: internal-bastion
+    sources:
+      - 10.98.1.230
+    # ssh: jiong → bastion → storage ProxyJump 통과용
+    services:
+      - ssh
+      - samba
+      - samba-client
+    ports:
+      - { port: 2222, protocol: tcp }
+      - { port: 445,  protocol: tcp }
+      - { port: 139,  protocol: tcp }
+      - { port: 9000, protocol: tcp }
+      - { port: 9001, protocol: tcp }
+
+  - name: trusted
+    interface: tun0
+    services:
+      - samba
+
+
+# ============================================================
+# MinIO (single-node single-drive)
+# ============================================================
+# 백업 (minio-env.txt + minio-status.txt) 그대로 재현.
+# Buckets 는 mc 로 별도 생성 (이관 시점 작업).
+
+storage_minio_version: latest   # 운영 안정 후엔 특정 버전 고정 권장
+storage_minio_binary_url: "https://dl.min.io/server/minio/release/linux-amd64/minio"
+storage_minio_binary_path: /usr/local/bin/minio
+
+storage_minio_user: minio-user
+storage_minio_group: minio-user
+
+storage_minio_data_dir: /data/minio
+storage_minio_config_env: /etc/default/minio
+storage_minio_systemd_unit: /etc/systemd/system/minio.service
+
+# 네트워크
+storage_minio_api_port: 9000
+storage_minio_console_port: 9001
+storage_minio_api_address: ":{{ storage_minio_api_port }}"
+storage_minio_console_address: ":{{ storage_minio_console_port }}"
+
+# 도메인 / 외부 URL (백업 그대로)
+storage_minio_server_url: "http://example.ddns.net:29000"
+storage_minio_browser_redirect_url: "http://example.ddns.net:29001"
+storage_minio_public_url: "https://s3.example.ddns.net"
+storage_minio_domain: "example.ddns.net s3.example.ddns.net"
+
+# CORS (백업 그대로)
+storage_minio_cors_allow_origin: "https://example.ddns.net https://s3.example.ddns.net"
+
+# 기타
+storage_minio_browser: "on"
+storage_minio_browser_security_headers: "off"
+storage_minio_log_level: "debug"
+storage_minio_http_trace: "/tmp/minio-http.log"
+
+# Credentials (vault)
+storage_minio_root_user: "{{ vault_storage_minio_root_user }}"
+storage_minio_root_password: "{{ vault_storage_minio_root_password }}"
+
+# MinIO 앱 유저 (portfolio-web에서 사용하는 credential)
+storage_minio_app_access_key: "{{ vault_minio_app_access_key }}"
+storage_minio_app_secret_key: "{{ vault_minio_app_secret_key }}"
+
+# mc (MinIO Client)
+storage_mc_binary_url: "https://dl.min.io/client/mc/release/linux-amd64/mc"
+storage_mc_binary_path: /usr/local/bin/mc
+
+# ============================================================
+# NFS (nfs-utils)
+# ============================================================
+# 백업 (exports) 기반. 사라진 10.98.1.231 export 제거.
+# 클라이언트: 10.98.1.240/28 (k8s 워커 대역) 만 유지.
+
+storage_nfs_data_dir: /data/nfs
+
+storage_nfs_exports:
+  - path: /data/nfs/web
+    clients:
+      - { ip: "10.98.1.240/28", opts: "rw,sync,no_root_squash,no_all_squash" }
+  - path: /data/nfs/docker
+    clients:
+      - { ip: "10.98.1.240/28", opts: "rw,sync,no_root_squash,no_all_squash" }
+  - path: /data/nfs/jenkins
+    clients:
+      - { ip: "10.98.1.240/28", opts: "rw,sync,no_root_squash,no_all_squash" }
+  - path: /data/nfs/k8s
+    clients:
+      - { ip: "10.98.1.240/28", opts: "rw,sync,no_root_squash,no_all_squash" }
+
+
+# ============================================================
+# Samba (SMB)
+# ============================================================
+# 백업 (smb-testparm.txt + smb-users.txt + smb-group.txt) 그대로 재현.
+# 비밀번호는 vault. UID/GID 백업 그대로 유지.
+
+storage_smb_data_dir: /data/smb
+
+# Global
+storage_smb_workgroup: SMB_STORAGE
+storage_smb_security: USER
+storage_smb_server_role: "standalone server"
+storage_smb_min_protocol: SMB2
+storage_smb_ports: 445
+storage_smb_log_file: "/var/log/samba/log.%m"
+storage_smb_max_log_size: 50
+
+# Group
+storage_smb_group:
+  name: smbgrp
+  gid: 2000
+
+# Users (UID/GID 백업 그대로 유지)
+storage_smb_users:
+  - name: laputa
+    uid: 2001
+    description: "yh"
+    password: "{{ vault_storage_smb_laputa_password }}"
+  - name: totoro
+    uid: 2002
+    description: "ju"
+    password: "{{ vault_storage_smb_totoro_password }}"
+
+# Shares
+storage_smb_share_path: "{{ storage_smb_data_dir }}/share"
+storage_smb_share_create_mask: "0660"
+storage_smb_share_directory_mask: "02770"
+storage_smb_share_force_group: smbgrp
+storage_smb_share_valid_users: "laputa totoro @smbgrp"
+
+# Homes
+storage_smb_homes_create_mask: "0664"
+storage_smb_homes_directory_mask: "0775"
+storage_smb_homes_path: "{{ storage_smb_data_dir }}/%U"

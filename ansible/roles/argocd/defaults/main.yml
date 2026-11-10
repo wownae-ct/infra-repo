@@ -1,0 +1,163 @@
+---
+# ============================================================
+# argocd role - defaults
+# ============================================================
+# ArgoCD 부트스트랩 (helm install).
+#
+# 본체 chart 는 ansible 영역, infra-repo 의 apps/argocd/ 는 extras 만
+# (VirtualService 등 — Istio 설치 후 ArgoCD App-of-Apps 가 sync).
+#
+# 디자인:
+#   - helm   : namespace + repo + values 렌더 + 멱등성 판정 + install
+#   - verify : server / controller / repo-server / dex / redis Ready
+#
+# UI 접근:
+#   - server.insecure=true   (TLS 종단을 Istio 가 처리, ArgoCD 는 평문 HTTP)
+#   - service.type=ClusterIP (Istio 경유, LoadBalancer 직접 노출 X)
+#
+# Admin password:
+#   - chart values 의 configs.secret.argocdServerAdminPassword 에 bcrypt 주입
+#   - argocd-secret 의 admin.password 필드를 chart 가 자동 생성
+# ============================================================
+
+# ============================================================
+# Helm release / chart
+# ============================================================
+argocd_helm_repo_name: "argo"
+argocd_helm_repo_url: "https://argoproj.github.io/argo-helm"
+
+argocd_helm_release_name: "argocd"
+argocd_helm_chart: "argo/argo-cd"
+argocd_helm_chart_version: "9.4.14"          # app v3.3.4
+argocd_namespace: "argocd"
+
+# kubeconfig
+argocd_kubeconfig: "/etc/kubernetes/admin.conf"
+
+# ============================================================
+# Admin password (vault)
+# ============================================================
+# bcrypt: configs.secret.argocdServerAdminPassword 로 chart 에 전달
+# 평문 : 사용자 로그인 시 본인이 기억할 용도 (chart 에는 안 들어감)
+argocd_admin_password_bcrypt: "{{ vault_argocd_admin_password_bcrypt }}"
+
+# ============================================================
+# Chart values
+# ============================================================
+# 운영 결정:
+#   - configs.params.server.insecure=true → Istio TLS termination 사용
+#   - server.service.type=ClusterIP → Istio ingressgateway 경유
+#   - configs.secret.argocdServerAdminPassword=bcrypt → admin 자동 설정
+#   - controller/server/repo-server resources 명시 (안정성)
+#   - ServiceMonitor 는 아직 OFF (kube-prometheus-stack 이후 켤 예정)
+#   - HA 는 일단 OFF (단일 replica, controller만 stateful)
+
+argocd_chart_values:
+  global:
+    domain: "argocd.internal"            # CoreDNS patch 후 의미 가짐
+
+  configs:
+    params:
+      server.insecure: true              # Istio 가 TLS 종단
+    secret:
+      # chart 가 이 값을 argocd-secret 의 admin.password 필드에 주입
+      argocdServerAdminPassword: "{{ argocd_admin_password_bcrypt }}"
+      # admin.passwordMtime 비워두면 chart 가 현재 시각으로 채움
+
+  server:
+    service:
+      type: ClusterIP
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: false                   # ServiceMonitor CRD 아직 없음
+
+  controller:
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: false
+
+  repoServer:
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: false
+
+  applicationSet:
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "200m"
+        memory: "256Mi"
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: false
+
+  notifications:
+    enabled: false                       # 추후 필요시
+
+  dex:
+    enabled: true                        # SSO 안 써도 chart 기본값 유지
+
+  redis:
+    enabled: true
+
+# ============================================================
+# Verify
+# ============================================================
+argocd_wait_timeout: "300s"
+argocd_components:
+  - { kind: deployment, name: argocd-server }
+  - { kind: deployment, name: argocd-repo-server }
+  - { kind: deployment, name: argocd-redis }
+  - { kind: deployment, name: argocd-dex-server }
+  - { kind: deployment, name: argocd-applicationset-controller }
+  - { kind: statefulset, name: argocd-application-controller }
+
+# ============================================================
+# Repo credentials (argocd-repo-creds Secret)
+# ============================================================
+# ArgoCD 가 private repo 접근하기 위한 인증 정보.
+# Secret 의 special label "argocd.argoproj.io/secret-type: repo-creds" 로
+# ArgoCD controller 가 자동 인식. URL prefix matching:
+#   - 이 Secret 의 url 이 "https://github.com/wownae-ct" 라면
+#   - 같은 prefix 로 시작하는 모든 repoURL 에 이 cred 가 자동 적용
+#
+# 인증 방식: HTTPS + GitHub Fine-grained PAT
+#   - vault_github_username : GitHub username (조직명)
+#   - vault_github_pat      : Fine-grained PAT (read-only on infra-repo)
+#
+# repo URL prefix:
+#   - 우리 조직의 모든 private repo 에 같은 cred 적용 가능하도록 org level prefix
+#   - 추가 repo 가 같은 조직 안이면 별도 cred 등록 불필요
+
+argocd_repo_creds_secret_name: "infra-repo-creds"
+argocd_repo_creds_url_prefix: "https://github.com/wownae-ct"
+argocd_repo_creds_type: "git"
+argocd_repo_creds_username: "{{ vault_github_username }}"
+argocd_repo_creds_password: "{{ vault_github_pat }}"

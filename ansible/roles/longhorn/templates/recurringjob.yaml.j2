@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+# Longhorn RecurringJob (백업 환경의 daily-backup 동등)
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: {{ longhorn_recurring_job_name }}
+  namespace: {{ longhorn_namespace }}
+spec:
+  cron: "{{ longhorn_recurring_job_cron }}"
+  task: backup
+  groups:
+{% for g in longhorn_recurring_job_groups %}
+    - {{ g }}
+{% endfor %}
+  retain: {{ longhorn_recurring_job_retain }}
+  concurrency: {{ longhorn_recurring_job_concurrency }}

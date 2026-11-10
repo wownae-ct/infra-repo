@@ -1,0 +1,17 @@
+---
+# ============================================================
+# promtail role - handlers
+# ============================================================
+
+- name: daemon-reload promtail
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+  when: not ansible_check_mode
+
+- name: restart promtail
+  ansible.builtin.systemd:
+    name: promtail
+    state: restarted
+  become: true
+  when: not ansible_check_mode

@@ -1,0 +1,130 @@
+---
+# ============================================================
+# kps/tasks/helm.yml — sub-task 1
+# ============================================================
+# 대상: k8s-master-01
+# kube-prometheus-stack chart install. AWS SNS credential 이 values 에
+# 포함되므로 values 파일은 0600.
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. namespace 보장
+# ------------------------------------------------------------
+- name: "helm | Ensure namespace {{ kps_namespace }} exists"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ kps_kubeconfig }} \
+      create namespace {{ kps_namespace }} \
+      --dry-run=client -o yaml | \
+    kubectl --kubeconfig={{ kps_kubeconfig }} apply -f -
+  args:
+    executable: /bin/bash
+  register: _ns_apply
+  changed_when: "'created' in _ns_apply.stdout"
+
+# ------------------------------------------------------------
+# 2. helm repo
+# ------------------------------------------------------------
+- name: "helm | Add prometheus-community helm repo"
+  ansible.builtin.command:
+    cmd: "helm repo add {{ kps_helm_repo_name }} {{ kps_helm_repo_url }}"
+  register: _repo_add
+  changed_when: "'has been added' in _repo_add.stdout"
+  failed_when:
+    - _repo_add.rc != 0
+    - "'already exists' not in _repo_add.stderr"
+
+- name: "helm | Update repo"
+  ansible.builtin.command:
+    cmd: "helm repo update {{ kps_helm_repo_name }}"
+  changed_when: false
+
+# ------------------------------------------------------------
+# 3. values.yaml 렌더 (AWS SNS credential 포함 → 0600)
+# ------------------------------------------------------------
+- name: "helm | Render values.yaml"
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: /etc/kubernetes/kps-values.yaml
+    owner: root
+    group: root
+    mode: '0600'
+    backup: true
+  no_log: true
+
+# ------------------------------------------------------------
+# 4. 멱등성 판정
+# ------------------------------------------------------------
+- name: "helm | Check current release status"
+  ansible.builtin.command:
+    cmd: >
+      helm status {{ kps_helm_release_name }}
+      --namespace {{ kps_namespace }}
+      --kubeconfig {{ kps_kubeconfig }}
+      -o json
+  register: _kps_status
+  changed_when: false
+  failed_when: false
+
+- name: "helm | Get current values (if release exists)"
+  ansible.builtin.command:
+    cmd: >
+      helm get values {{ kps_helm_release_name }}
+      --namespace {{ kps_namespace }}
+      --kubeconfig {{ kps_kubeconfig }}
+      -o yaml
+  register: _kps_cur_values
+  changed_when: false
+  failed_when: false
+  when: _kps_status.rc == 0
+  no_log: true
+
+- name: "helm | Read rendered values file"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/kps-values.yaml
+  register: _kps_rendered
+  no_log: true
+
+- name: "helm | Decide if install/upgrade is needed"
+  ansible.builtin.set_fact:
+    _kps_install_needed: >-
+      {{
+        _kps_status.rc != 0
+        or (_kps_cur_values.stdout | default('') | from_yaml | default({}))
+           != (_kps_rendered.content | b64decode | from_yaml)
+      }}
+  no_log: true
+
+# ------------------------------------------------------------
+# 5. helm install (or upgrade)
+# ------------------------------------------------------------
+- name: "helm | helm upgrade --install {{ kps_helm_release_name }} {{ kps_helm_chart_version }}"
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install {{ kps_helm_release_name }} {{ kps_helm_chart }}
+      --version {{ kps_helm_chart_version }}
+      --namespace {{ kps_namespace }}
+      --values /etc/kubernetes/kps-values.yaml
+      --wait
+      --timeout 15m
+      --kubeconfig {{ kps_kubeconfig }}
+  register: _helm_out
+  when: _kps_install_needed | bool
+  changed_when: true
+  no_log: true
+
+- name: "helm | Report install/upgrade result"
+  ansible.builtin.debug:
+    msg: "kube-prometheus-stack {{ 'updated' if _kps_install_needed else 'already up-to-date (no change)' }}"
+
+# ------------------------------------------------------------
+# 6. CRD 등록 확인
+# ------------------------------------------------------------
+- name: "helm | Wait for CRDs to be Established"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ kps_kubeconfig }}
+      wait --for=condition=Established
+      crd/{{ item }}
+      --timeout=60s
+  loop: "{{ kps_expected_crds }}"
+  changed_when: false

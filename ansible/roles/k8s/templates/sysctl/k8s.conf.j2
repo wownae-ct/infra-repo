@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+# /etc/sysctl.d/k8s.conf
+#
+# kubeadm + Cilium 이 요구하는 커널 파라미터.
+# defaults/main.yml 의 두 dict 를 합쳐서 렌더:
+#   - k8s_sysctl_params        : k8s 표준 (bridge-nf-call*, ip_forward)
+#   - k8s_sysctl_cilium_params : Cilium override (rp_filter=0)
+#
+# 파일명을 99- 접두사로 하지 않은 이유:
+#   sysctl.d/ 우선순위는 사전순. 다른 conf 와 충돌할 가능성 거의 없고,
+#   백업 환경 그대로 'k8s.conf' 단일 파일 정책 유지.
+
+# ----- k8s standard -----
+{% for k, v in k8s_sysctl_params.items() %}
+{{ k }} = {{ v }}
+{% endfor %}
+
+# ----- Cilium override -----
+# rp_filter=0: Cilium 이 mangled packet 을 만들 수 있어 strict RPF 가 켜져
+# 있으면 drop 됨. Cilium 공식 문서에서 명시적으로 0 요구.
+{% for k, v in k8s_sysctl_cilium_params.items() %}
+{{ k }} = {{ v }}
+{% endfor %}

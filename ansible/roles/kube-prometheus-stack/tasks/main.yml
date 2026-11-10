@@ -1,0 +1,29 @@
+---
+# ============================================================
+# roles/kube-prometheus-stack/tasks/main.yml — sub-task router
+# ============================================================
+# Sub-task:
+#   helm    : kube-prometheus-stack chart install
+#   verify  : 컴포넌트 Ready + CRDs + PVC bound 검증
+#
+# 주의:
+#   etcd metrics 활성화는 kubeadm-config.yaml.j2 의 etcd.extraArgs 가 책임짐
+#   (신환경 재구축 시 자동 반영). 이미 떠있는 클러스터는 별도 수동 작업으로 처리됨.
+# ============================================================
+
+- name: "kps | Assert kps_sub_task is provided and valid"
+  ansible.builtin.assert:
+    that:
+      - kps_sub_task is defined
+      - kps_sub_task in _kps_sub_tasks_allowed
+    fail_msg: >-
+      kps_sub_task must be one of: {{ _kps_sub_tasks_allowed | join(', ') }}
+      (got: {{ kps_sub_task | default('UNDEFINED') }})
+    quiet: true
+  vars:
+    _kps_sub_tasks_allowed:
+      - helm
+      - verify
+
+- name: "kps | Include sub-task → {{ kps_sub_task }}"
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/{{ kps_sub_task }}.yml"

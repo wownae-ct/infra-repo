@@ -1,0 +1,102 @@
+---
+# ============================================================
+# db role - ufw sub-task
+# ============================================================
+# UFW (Uncomplicated Firewall) 설정.
+# 백업 (ufw-verbose.txt) 기반. 사라진 10.98.1.231 룰 제거.
+#
+# 기본 정책: incoming deny / outgoing allow
+# 룰: ssh(2222), dns(53), ntp(123), mariadb(3306)
+#
+# 의존성:
+#   - packages.yml: ufw
+#   - ssh.yml: 2222 listen 박힌 후 (룰 적용 도중 ssh 끊김 방지)
+# ============================================================
+
+# ---------- 기본 정책 ----------
+
+- name: Set UFW default incoming policy
+  community.general.ufw:
+    direction: incoming
+    policy: "{{ db_ufw_default_input }}"
+  become: true
+  tags: [db, ufw, defaults]
+
+- name: Set UFW default outgoing policy
+  community.general.ufw:
+    direction: outgoing
+    policy: "{{ db_ufw_default_output }}"
+  become: true
+  tags: [db, ufw, defaults]
+
+- name: Set UFW logging
+  community.general.ufw:
+    logging: "{{ db_ufw_logging }}"
+  become: true
+  tags: [db, ufw, defaults]
+
+# ---------- Loopback 허용 ----------
+# 백업 ufw 에 "Anywhere on lo ALLOW IN Anywhere" 가 있었음.
+# (서비스 간 localhost 통신 - mariadb 연결 등에 필수)
+
+- name: Allow loopback (lo interface)
+  community.general.ufw:
+    rule: allow
+    interface: lo
+    direction: in
+  become: true
+  tags: [db, ufw, rules]
+
+# ---------- Rules ----------
+
+- name: Apply UFW rules
+  community.general.ufw:
+    rule: "{{ item.rule }}"
+    from_ip: "{{ item.from }}"
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    comment: "{{ item.comment | default(omit) }}"
+  become: true
+  loop: "{{ db_ufw_rules }}"
+  loop_control:
+    label: "{{ item.from }} → {{ item.port }}/{{ item.proto }} ({{ item.comment }})"
+  tags: [db, ufw, rules]
+
+# ---------- UFW 활성화 ----------
+
+- name: Ensure UFW enabled
+  community.general.ufw:
+    state: enabled
+  become: true
+  tags: [db, ufw, service]
+
+# Handler 즉시 실행
+- name: Flush handlers (ufw reload 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [db, ufw]
+
+# ---------- 검증 ----------
+
+- name: Verify - UFW active
+  ansible.builtin.command: ufw status
+  become: true
+  register: ufw_status
+  changed_when: false
+  failed_when: "'Status: active' not in ufw_status.stdout"
+  when: not ansible_check_mode
+  tags: [db, ufw, verify]
+
+- name: Verify - UFW 룰 등록 확인
+  ansible.builtin.shell: |
+    ufw status verbose | grep -E "{{ item.port }}({{ '/' + item.proto if item.proto != 'any' else '(/[a-z]+)?' }})?\s+ALLOW IN\s+{{ item.from | regex_escape() }}"
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ db_ufw_rules }}"
+  loop_control:
+    label: "{{ item.from }} → {{ item.port }}"
+  register: ufw_rule_check
+  changed_when: false
+  failed_when: ufw_rule_check.rc != 0
+  when: not ansible_check_mode
+  tags: [db, ufw, verify]

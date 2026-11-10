@@ -1,0 +1,50 @@
+---
+# ============================================================
+# Phase 5d — control-plane join (master-02, master-03)
+# ============================================================
+# 사양표 sub-task #6
+#
+# Play 1: master-01 에서 token/cert 재발급 + set_fact (bootstrap sub-task 의
+#         후반부와 동일한 동작 — admin.conf 있으면 init 은 skip 되고
+#         token 재발급 task 만 실행됨)
+# Play 2: master-02, master-03 이 hostvars 로 join 명령을 받아 kubeadm join
+#
+# 결과:
+#   - 3 control-plane HA 클러스터 완성 (NotReady — Cilium 전)
+# ============================================================
+
+# ============================================================
+# Play 1 — master-01 에서 join 명령 재발급
+# ============================================================
+- name: "Phase 5d-pre | Refresh join commands on master-01"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    # bootstrap sub-task 를 다시 호출.
+    # admin.conf 가 이미 있어 init 은 skip 되고, token/cert 재발급 + set_fact
+    # 부분만 다시 도는 구조 (bootstrap.yml 의 멱등성 설계).
+    - name: "5d-pre → bootstrap (token 재발급)"
+      ansible.builtin.include_role:
+        name: k8s
+      vars:
+        k8s_sub_task: bootstrap
+
+# ============================================================
+# Play 2 — master-02, master-03 join
+# ============================================================
+- name: "Phase 5d | Join master-02, master-03 as control-plane"
+  hosts: k8s_masters[1:]
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  serial: 1   # 한 번에 한 대씩 — etcd quorum 안전
+
+  tasks:
+    - name: "5d → join_cp"
+      ansible.builtin.include_role:
+        name: k8s
+      vars:
+        k8s_sub_task: join_cp

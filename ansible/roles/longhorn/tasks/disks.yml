@@ -1,0 +1,151 @@
+---
+# ============================================================
+# longhorn/tasks/disks.yml — sub-task 3
+# ============================================================
+# 1. 의도한 disk-wXX 추가 (merge patch)
+# 2. default-disk-* 키 식별
+# 3. default-disk-* 를 비활성화 (allowScheduling=false + evictionRequested)
+# 4. default-disk-* 가 비어있을 때까지 wait
+# 5. null patch 로 default-disk-* 제거
+#
+# Longhorn webhook 은 사용 중일 가능성 있는 디스크 삭제를 거부함.
+# disable + eviction 후에야 webhook 통과.
+# ============================================================
+
+# ------------------------------------------------------------
+# 1) 의도한 disk-wXX 추가
+# ------------------------------------------------------------
+- name: "disks | For each worker — ensure intended disk (merge patch)"
+  ansible.builtin.shell: |
+    DISK_KEY="disk-{{ item | regex_replace('^k8s-worker-', 'w') }}"
+    cat <<EOF | kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      patch node.longhorn.io {{ item }} \
+      --type=merge \
+      --patch-file=/dev/stdin
+    spec:
+      name: {{ item }}
+      allowScheduling: true
+      disks:
+        $DISK_KEY:
+          allowScheduling: true
+          diskDriver: ""
+          diskType: filesystem
+          evictionRequested: false
+          path: {{ longhorn_disk_mount_path }}
+          storageReserved: {{ longhorn_disk_storage_reserved_bytes }}
+          tags:
+            - {{ longhorn_disk_tag_name }}
+    EOF
+  args:
+    executable: /bin/bash
+  loop: "{{ groups['k8s_workers'] }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _disk_add
+  changed_when: "'patched' in _disk_add.stdout and 'no change' not in _disk_add.stdout"
+  retries: 10
+  delay: 6
+  until: _disk_add.rc == 0
+
+# ------------------------------------------------------------
+# 2) default-disk-* 키 식별
+# ------------------------------------------------------------
+- name: "disks | Find default-disk keys per worker"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      get node.longhorn.io {{ item }} \
+      -o jsonpath='{.spec.disks}' \
+    | python3 -c "
+    import sys, json
+    d = json.load(sys.stdin)
+    print('\n'.join(k for k in d.keys() if k.startswith('default-disk-')))
+    "
+  args:
+    executable: /bin/bash
+  loop: "{{ groups['k8s_workers'] }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _default_disks
+  changed_when: false
+
+# ------------------------------------------------------------
+# 3) default-disk-* 비활성화 + eviction 요청
+# ------------------------------------------------------------
+- name: "disks | Disable default-disk + request eviction"
+  ansible.builtin.shell: |
+    cat <<EOF | kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      patch node.longhorn.io {{ item.0.item }} \
+      --type=merge \
+      --patch-file=/dev/stdin
+    spec:
+      name: {{ item.0.item }}
+      disks:
+        {{ item.1 }}:
+          allowScheduling: false
+          evictionRequested: true
+    EOF
+  args:
+    executable: /bin/bash
+  loop: "{{ _default_disks.results | subelements('stdout_lines', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.item }} → disable {{ item.1 }}"
+  register: _disk_disable
+  changed_when: "'patched' in _disk_disable.stdout and 'no change' not in _disk_disable.stdout"
+  retries: 10
+  delay: 6
+  until: _disk_disable.rc == 0
+
+# ------------------------------------------------------------
+# 4) default-disk-* 가 비었는지 wait (replica 0 + 사용량 0)
+# ------------------------------------------------------------
+- name: "disks | Wait until default-disk has no replicas"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      get node.longhorn.io {{ item.0.item }} \
+      -o jsonpath='{.status.diskStatus.{{ item.1 }}.scheduledReplica}'
+  args:
+    executable: /bin/bash
+  loop: "{{ _default_disks.results | subelements('stdout_lines', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.item }} → wait empty {{ item.1 }}"
+  register: _disk_wait
+  changed_when: false
+  # scheduledReplica field 가 없거나(=replica 없음) "{}" 이면 OK
+  # 빈 디스크는 거의 즉시 true 가 될 것
+  failed_when: false
+  retries: 10
+  delay: 6
+  until: >-
+    _disk_wait.stdout | trim == ''
+    or _disk_wait.stdout | trim == '{}'
+    or _disk_wait.stdout | trim == 'null'
+
+# ------------------------------------------------------------
+# 5) default-disk-* null patch 로 제거
+# ------------------------------------------------------------
+- name: "disks | Remove default-disk keys (null merge patch)"
+  ansible.builtin.shell: |
+    cat <<EOF | kubectl --kubeconfig={{ longhorn_kubeconfig }} \
+      -n {{ longhorn_namespace }} \
+      patch node.longhorn.io {{ item.0.item }} \
+      --type=merge \
+      --patch-file=/dev/stdin
+    spec:
+      name: {{ item.0.item }}
+      disks:
+        {{ item.1 }}: null
+    EOF
+  args:
+    executable: /bin/bash
+  loop: "{{ _default_disks.results | subelements('stdout_lines', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.item }} → remove {{ item.1 }}"
+  register: _disk_remove
+  changed_when: "'patched' in _disk_remove.stdout and 'no change' not in _disk_remove.stdout"
+  retries: 15
+  delay: 8
+  until: _disk_remove.rc == 0

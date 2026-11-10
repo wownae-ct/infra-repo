@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+# longhorn chart values — defaults/main.yml 의 longhorn_chart_values dict 직렬화
+
+{{ longhorn_chart_values | to_nice_yaml(indent=2, width=200) }}

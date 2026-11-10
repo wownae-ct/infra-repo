@@ -1,0 +1,91 @@
+---
+# ============================================================
+# ecr-credentials-refresh role - defaults
+# ============================================================
+# AWS ECR private registry token 자동 갱신 (12시간 만료 → 6시간 주기 갱신).
+#
+# 배경:
+#   - portfolio-web Deployment 가 imagePullSecrets: ecr-credentials 참조
+#   - Jenkins 파이프라인 외부에서 Pod 재시작 시 token 만료 → ImagePullBackOff
+#   - 백업 환경 해결책: CronJob 으로 6시간마다 token 재발급 + Secret apply
+#
+# 백업 환경 분석:
+#   - namespace : portfolio-web
+#   - CronJob   : ecr-credentials-refresh (schedule "0 */6 * * *")
+#   - 패턴 : 2-container
+#       initContainer (amazon/aws-cli)    → aws ecr get-login-password
+#                                         → /shared/ecr-token.txt
+#       container     (dtzar/helm-kubectl) → kubectl create secret docker-registry
+#                                         → --dry-run + apply (멱등)
+#   - 생성 Secret : ecr-credentials (kubernetes.io/dockerconfigjson)
+#   - AWS creds Secret : aws-credentials (Opaque, 3 keys)
+#   - sidecar.istio.io/inject: "false"  (Istio 사이드카 불필요)
+#
+# 백업 대비 개선점:
+#   - serviceAccountName : default → 전용 SA (least privilege)
+#   - image tag : :latest → 고정 버전 (재현성)
+#   - AWS creds Secret : 수동 → Ansible task (Vault 에서 주입)
+#   - 초기 1회 즉시 실행 Job 추가 (CronJob 첫 schedule 6h 안 기다림)
+#
+# 디자인:
+#   - install : namespace + aws creds Secret + RBAC + CronJob + 초기 Job
+#   - verify  : ecr-credentials Secret 존재 + CronJob 스케줄 + portfolio-web Ready
+# ============================================================
+
+# ============================================================
+# 대상
+# ============================================================
+ecr_namespace: "portfolio-web"
+ecr_secret_name: "ecr-credentials"
+ecr_cronjob_name: "ecr-credentials-refresh"
+
+# ServiceAccount / RBAC
+ecr_sa_name: "ecr-credentials-refresh"
+ecr_role_name: "ecr-credentials-refresh"
+ecr_binding_name: "ecr-credentials-refresh"
+
+# AWS 자격증명을 담을 Secret (CronJob initContainer 가 env 로 읽음)
+ecr_aws_creds_secret: "aws-credentials"
+
+# kubeconfig
+ecr_kubeconfig: "/etc/kubernetes/admin.conf"
+
+# ============================================================
+# ECR
+# ============================================================
+ecr_registry: "<aws-account-id>.dkr.ecr.ap-northeast-2.amazonaws.com"
+ecr_region: "ap-northeast-2"
+
+# ============================================================
+# 스케줄 (ECR 토큰 12h 만료, 6h 주기 = 안전 마진 2x)
+# ============================================================
+ecr_schedule: "0 */6 * * *"
+
+# ============================================================
+# 이미지 (:latest 대신 고정 버전 — 재현성)
+# ============================================================
+ecr_awscli_image: "amazon/aws-cli:2.17.0"
+ecr_kubectl_image: "dtzar/helm-kubectl:3.16.0"
+
+# ============================================================
+# AWS credential (vault 에서 주입, no_log)
+# ============================================================
+# 13차 에서 등록한 슈퍼유저 키 재사용 (SNS / ECR / EC2 통합).
+# 추후 IAM 분리 시 이 변수만 다른 vault 변수로 교체.
+ecr_aws_access_key: "{{ vault_aws_access_key }}"
+ecr_aws_secret_key: "{{ vault_aws_secret_key }}"
+
+# ============================================================
+# 초기 1회 즉시 실행 (CronJob 첫 schedule 6h 안 기다림)
+# ============================================================
+ecr_run_initial_job: true
+ecr_initial_job_name: "ecr-credentials-refresh-bootstrap"
+
+# ============================================================
+# Verify
+# ============================================================
+ecr_verify_timeout: "120s"
+
+# 검증 대상 Deployment (이 Pod 들이 ecr-credentials 의존)
+ecr_target_deployments:
+  - portfolio-web

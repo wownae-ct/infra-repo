@@ -1,0 +1,39 @@
+---
+# ============================================================
+# ArgoCD 부트스트랩
+# ============================================================
+# 대상: k8s-master-01 (helm + kubectl)
+#
+# 사전 조건:
+#   - sealed-secrets / metallb / longhorn 완료
+#   - vault 변수: vault_argocd_admin_password_bcrypt 등록 완료
+#
+# Sub-task 순서:
+#   1. helm    — chart install (server + controller + repo-server + dex + redis + applicationset)
+#   2. verify  — 컴포넌트 Ready + admin secret + CRD 확인
+# ============================================================
+
+- name: "ArgoCD bootstrap"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "1) helm (server + controller + repo-server + dex + redis)"
+      ansible.builtin.include_role:
+        name: argocd
+      vars:
+        argocd_sub_task: helm
+
+    - name: "2) repo_credentials (infra-repo HTTPS + PAT)"
+      ansible.builtin.include_role:
+        name: argocd
+      vars:
+        argocd_sub_task: repo_credentials
+
+    - name: "3) verify"
+      ansible.builtin.include_role:
+        name: argocd
+      vars:
+        argocd_sub_task: verify

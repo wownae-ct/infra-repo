@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+# metallb chart values — defaults/main.yml 의 metallb_chart_values dict 직렬화
+
+{{ metallb_chart_values | to_nice_yaml(indent=2, width=200) }}

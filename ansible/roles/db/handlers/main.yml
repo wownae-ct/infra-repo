@@ -1,0 +1,29 @@
+---
+# ============================================================
+# db role - handlers
+# ============================================================
+
+# ---------- SSH ----------
+
+- name: restart sshd
+  ansible.builtin.systemd:
+    name: ssh
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+# ---------- UFW ----------
+
+- name: reload ufw
+  ansible.builtin.command: ufw reload
+  become: true
+  when: not ansible_check_mode
+
+# ---------- MariaDB ----------
+
+- name: restart mariadb
+  ansible.builtin.systemd:
+    name: mariadb
+    state: restarted
+  become: true
+  when: not ansible_check_mode

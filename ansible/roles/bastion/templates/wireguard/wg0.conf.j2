@@ -1,0 +1,13 @@
+# /etc/wireguard/{{ bastion_wireguard_interface }}.conf - managed by Ansible (bastion role)
+# bastion ↔ AWS EC2 P2P 터널.
+
+[Interface]
+Address = {{ bastion_wireguard_address }}
+ListenPort = {{ bastion_wireguard_listen_port }}
+PrivateKey = {{ bastion_wireguard_private_key }}
+
+[Peer]
+PublicKey = {{ bastion_wireguard_peer_public_key }}
+Endpoint = {{ bastion_wireguard_peer_endpoint }}
+AllowedIPs = {{ bastion_wireguard_peer_allowed_ips }}
+PersistentKeepalive = {{ bastion_wireguard_persistent_keepalive }}

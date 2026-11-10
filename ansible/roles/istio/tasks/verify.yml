@@ -1,0 +1,156 @@
+---
+# ============================================================
+# istio role - defaults
+# ============================================================
+# Istio service mesh 부트스트랩 (3 개 helm chart).
+#
+# 백업 환경: istioctl 로 설치
+# 신환경  : helm 으로 통일 (자동화 + 다른 컴포넌트와 일관성)
+#
+# Chart 3 개:
+#   1. istio/base        — CRDs + 기본 ServiceAccount/RBAC
+#   2. istio/istiod      — control plane (Pilot)
+#   3. istio/gateway     — ingressgateway (LoadBalancer)
+#
+# Gateway CR (external + internal) 은 Ansible 영역 아님:
+#   - infra-repo/apps/istio-gateway/ 가 ArgoCD App-of-Apps 로 sync
+#   - Ansible 은 본체 chart 3 개만 깔고 끝
+#
+# 핵심 검증:
+#   - kubectl -n istio-system get svc istio-ingressgateway
+#   - External IP = 10.98.1.250 (MetalLB pool 첫 IP, 백업 환경과 동일)
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. helm releases
+# ------------------------------------------------------------
+- name: "verify | List helm releases in {{ istio_namespace }}"
+  ansible.builtin.shell: |
+    helm list -n {{ istio_namespace }} \
+      --kubeconfig {{ istio_kubeconfig }}
+  args:
+    executable: /bin/bash
+  register: _v_helm
+  changed_when: false
+
+- name: "verify | Show helm releases"
+  ansible.builtin.debug:
+    msg: "{{ _v_helm.stdout_lines }}"
+
+- name: "verify | Assert 3 releases exist (base / istiod / ingress)"
+  ansible.builtin.assert:
+    that:
+      - "'istio-base' in _v_helm.stdout"
+      - "'istiod' in _v_helm.stdout"
+      - "istio_ingress_release_name in _v_helm.stdout"
+    fail_msg: "istio helm releases 가 모두 있어야 합니다."
+
+# ------------------------------------------------------------
+# 2. CRDs
+# ------------------------------------------------------------
+- name: "verify | List Istio CRDs"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ istio_kubeconfig }} \
+      get crd -o name | grep -E '(istio\.io|networking\.istio\.io|security\.istio\.io|telemetry\.istio\.io)$'
+  args:
+    executable: /bin/bash
+  register: _v_crds
+  changed_when: false
+  failed_when: _v_crds.stdout_lines | length < 8   # 백업 기준 10+ 개
+
+- name: "verify | Show Istio CRDs count"
+  ansible.builtin.debug:
+    msg: "Istio CRDs: {{ _v_crds.stdout_lines | length }}개 등록"
+
+# ------------------------------------------------------------
+# 3. istiod Deployment Available
+# ------------------------------------------------------------
+- name: "verify | istiod Deployment Available"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ istio_kubeconfig }}
+      -n {{ istio_namespace }}
+      wait --for=condition=Available deployment/istiod
+      --timeout={{ istio_wait_timeout }}
+  changed_when: false
+
+# ------------------------------------------------------------
+# 4. ingressgateway Deployment Available
+# ------------------------------------------------------------
+- name: "verify | ingressgateway Deployment Available"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ istio_kubeconfig }}
+      -n {{ istio_namespace }}
+      wait --for=condition=Available deployment/{{ istio_ingress_release_name }}
+      --timeout={{ istio_wait_timeout }}
+  changed_when: false
+
+# ------------------------------------------------------------
+# 5. ingressgateway Service LB IP (단언 — 10.98.1.250)
+# ------------------------------------------------------------
+- name: "verify | Get ingressgateway Service LB IP"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ istio_kubeconfig }} \
+      -n {{ istio_namespace }} \
+      get svc {{ istio_ingress_release_name }} \
+      -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+  args:
+    executable: /bin/bash
+  register: _v_lb_ip
+  changed_when: false
+  failed_when: _v_lb_ip.stdout != istio_ingress_lb_ip
+
+- name: "verify | Get ingressgateway Service detail"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ istio_kubeconfig }} \
+      -n {{ istio_namespace }} \
+      get svc {{ istio_ingress_release_name }} -o wide
+  args:
+    executable: /bin/bash
+  register: _v_svc
+  changed_when: false
+
+- name: "verify | Show ingressgateway Service"
+  ansible.builtin.debug:
+    msg: "{{ _v_svc.stdout_lines }}"
+
+# ------------------------------------------------------------
+# 6. Pods
+# ------------------------------------------------------------
+- name: "verify | List istio-system pods"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ istio_kubeconfig }} \
+      -n {{ istio_namespace }} \
+      get pods -o wide
+  args:
+    executable: /bin/bash
+  register: _v_pods
+  changed_when: false
+
+- name: "verify | Show istio-system pods"
+  ansible.builtin.debug:
+    msg: "{{ _v_pods.stdout_lines }}"
+
+# ------------------------------------------------------------
+# 7. validating webhook
+# ------------------------------------------------------------
+- name: "verify | istiod validating webhook exists"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ istio_kubeconfig }} \
+      get validatingwebhookconfiguration istiod-default-validator -o name
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+# 8. 최종 리포트
+- name: "verify | Final report"
+  ansible.builtin.debug:
+    msg:
+      - "helm releases       : istio-base / istiod / {{ istio_ingress_release_name }} OK"
+      - "CRDs                : {{ _v_crds.stdout_lines | length }}개 등록"
+      - "istiod              : Deployment Available"
+      - "ingressgateway      : Deployment Available"
+      - "ingressgateway LB IP: {{ _v_lb_ip.stdout }} (expect {{ istio_ingress_lb_ip }})"
+      - "validating webhook  : istiod-default-validator OK"
+      - "다음 단계: CoreDNS hosts patch (*.internal → {{ istio_ingress_lb_ip }})"

@@ -1,0 +1,244 @@
+---
+# ============================================================
+# storage role - firewalld sub-task
+# ============================================================
+# 백업 (firewalld-all-zones) 기반.
+# 사라진 10.98.1.234 rich rule 은 defaults 에서 이미 제거됨.
+#
+# Zone 설계:
+#   - internal (eth0 바인딩)            : NFS, SSH, k8s 대역 MinIO API
+#   - internal-bastion (source=230)     : bastion → MinIO + SMB + SSH (ProxyJump)
+#   - trusted (tun0 바인딩)             : OpenVPN 클라이언트 SMB 접근
+#
+# NetworkManager 가 통제하는 인터페이스 (eth0) 는 NM connection profile 에도
+# zone 을 박아야 재부팅/NM 재시작 시에도 zone 유지됨.
+#
+# 모든 변경은 permanent: true + immediate: true → 영구 + 즉시 적용.
+# ============================================================
+
+# ---------- 서비스 활성화 ----------
+
+- name: Ensure firewalld enabled and running
+  ansible.builtin.systemd:
+    name: firewalld
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [storage, firewalld, service]
+
+# ---------- Zone 생성 ----------
+# internal, trusted 는 firewalld 기본 zone. internal-bastion 만 신규.
+# 이미 있으면 changed 안 됨.
+
+- name: Ensure firewalld zones exist
+  ansible.posix.firewalld:
+    zone: "{{ item.name }}"
+    state: present
+    permanent: true
+  become: true
+  loop: "{{ storage_firewalld_zones }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: reload firewalld
+  tags: [storage, firewalld, zones]
+
+# 신규 zone 즉시 사용 가능하게 reload 적용
+- name: Flush handlers (새 zone runtime 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [storage, firewalld]
+
+# ---------- NetworkManager 연결에 zone 박기 ----------
+# firewalld --change-interface --permanent 만으로는 부족함.
+# NetworkManager 가 통제하는 인터페이스는 NM 의 connection profile 에
+# zone 을 박아야 재부팅/NM 재시작 시에도 유지됨.
+#
+# 이 작업이 없으면: 재부팅 시 NM 이 zone 을 default 로 되돌려서 SSH 끊김 사고.
+
+- name: Get NetworkManager connection name for each interface
+  ansible.builtin.shell: |
+    nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="{{ item.interface }}" '$2==dev {print $1; exit}'
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ storage_firewalld_zones }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.interface | default('-') }})"
+  register: nm_connection_names
+  changed_when: false
+  failed_when: false
+  when: item.interface is defined
+  tags: [storage, firewalld, nm]
+
+- name: Set zone in NetworkManager connection (persistent across reboots)
+  ansible.builtin.shell: |
+    CURRENT=$(nmcli -t -f connection.zone connection show "{{ item.stdout }}" | cut -d: -f2)
+    if [ "$CURRENT" != "{{ item.item.name }}" ]; then
+      nmcli connection modify "{{ item.stdout }}" connection.zone {{ item.item.name }}
+      echo CHANGED
+    else
+      echo OK
+    fi
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ nm_connection_names.results }}"
+  loop_control:
+    label: "{{ item.item.name }} ← {{ item.stdout | default('(none)') }}"
+  register: nm_zone_set
+  changed_when: "'CHANGED' in nm_zone_set.stdout"
+  when:
+    - item.item.interface is defined
+    - item.stdout is defined
+    - item.stdout | length > 0
+  tags: [storage, firewalld, nm]
+
+# ---------- Zone 별 interface 바인딩 ----------
+
+- name: Bind interfaces to zones
+  ansible.posix.firewalld:
+    zone: "{{ item.name }}"
+    interface: "{{ item.interface }}"
+    state: enabled
+    permanent: true
+    immediate: true
+  become: true
+  loop: "{{ storage_firewalld_zones }}"
+  loop_control:
+    label: "{{ item.name }} ← {{ item.interface | default('(none)') }}"
+  when: item.interface is defined
+  tags: [storage, firewalld, zones]
+
+# ---------- Zone 별 source 바인딩 ----------
+
+- name: Bind sources to zones
+  ansible.posix.firewalld:
+    zone: "{{ item.0.name }}"
+    source: "{{ item.1 }}"
+    state: enabled
+    permanent: true
+    immediate: true
+  become: true
+  loop: "{{ storage_firewalld_zones | subelements('sources', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} ← {{ item.1 }}"
+  tags: [storage, firewalld, zones]
+
+# ---------- Zone 별 service ----------
+
+- name: Add services to zones
+  ansible.posix.firewalld:
+    zone: "{{ item.0.name }}"
+    service: "{{ item.1 }}"
+    state: enabled
+    permanent: true
+    immediate: true
+  become: true
+  loop: "{{ storage_firewalld_zones | subelements('services', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} ← {{ item.1 }}"
+  tags: [storage, firewalld, services]
+
+# ---------- Zone 별 port ----------
+
+- name: Add ports to zones
+  ansible.posix.firewalld:
+    zone: "{{ item.0.name }}"
+    port: "{{ item.1.port }}/{{ item.1.protocol }}"
+    state: enabled
+    permanent: true
+    immediate: true
+  become: true
+  loop: "{{ storage_firewalld_zones | subelements('ports', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} ← {{ item.1.port }}/{{ item.1.protocol }}"
+  tags: [storage, firewalld, ports]
+
+# ---------- Zone 별 rich rule ----------
+
+- name: Add rich rules to zones
+  ansible.posix.firewalld:
+    zone: "{{ item.0.name }}"
+    rich_rule: "{{ item.1 }}"
+    state: enabled
+    permanent: true
+    immediate: true
+  become: true
+  loop: "{{ storage_firewalld_zones | subelements('rich_rules', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} ← {{ item.1 }}"
+  tags: [storage, firewalld, rich_rules]
+
+# ---------- Default zone 변경 ----------
+# 모든 zone 설정이 끝난 후 마지막에. (중간에 바꾸면 룰 적용 도중 트래픽 끊김 위험)
+# firewalld 모듈에 default zone 옵션 없음 → firewall-cmd 직접 호출.
+
+- name: Get current default zone
+  ansible.builtin.command: firewall-cmd --get-default-zone
+  become: true
+  register: current_default_zone
+  changed_when: false
+  tags: [storage, firewalld, default]
+
+- name: Set default zone
+  ansible.builtin.command: firewall-cmd --set-default-zone={{ storage_firewalld_default_zone }}
+  become: true
+  when: current_default_zone.stdout != storage_firewalld_default_zone
+  notify: reload firewalld
+  tags: [storage, firewalld, default]
+
+- name: Flush handlers (default zone reload 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [storage, firewalld]
+
+# ---------- 검증 ----------
+
+- name: Verify - firewalld 서비스 active
+  ansible.builtin.systemd:
+    name: firewalld
+    state: started
+  become: true
+  register: fw_running
+  changed_when: false
+  failed_when: fw_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [storage, firewalld, verify]
+
+- name: Verify - default zone 일치
+  ansible.builtin.command: firewall-cmd --get-default-zone
+  become: true
+  register: fw_default
+  changed_when: false
+  failed_when: fw_default.stdout != storage_firewalld_default_zone
+  when: not ansible_check_mode
+  tags: [storage, firewalld, verify]
+
+- name: Verify - zone 별 service 등록 확인
+  ansible.builtin.shell: |
+    firewall-cmd --zone={{ item.0.name }} --list-services | tr ' ' '\n' | grep -qx "{{ item.1 }}"
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ storage_firewalld_zones | subelements('services', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} → {{ item.1 }}"
+  register: svc_check
+  changed_when: false
+  failed_when: svc_check.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, firewalld, verify]
+
+- name: Verify - zone 별 port 등록 확인
+  ansible.builtin.shell: |
+    firewall-cmd --zone={{ item.0.name }} --list-ports | tr ' ' '\n' | grep -qx "{{ item.1.port }}/{{ item.1.protocol }}"
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ storage_firewalld_zones | subelements('ports', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} → {{ item.1.port }}/{{ item.1.protocol }}"
+  register: port_check
+  changed_when: false
+  failed_when: port_check.rc != 0
+  when: not ansible_check_mode
+  tags: [storage, firewalld, verify]

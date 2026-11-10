@@ -1,0 +1,152 @@
+---
+# ============================================================
+# roles/k8s/tasks/bootstrap.yml — sub-task 5
+# ============================================================
+# 대상: k8s-master-01 단독
+# 호출: include_role: { name: k8s } vars: { k8s_sub_task: bootstrap }
+#
+# kubeadm init 으로 single-CP 클러스터 부트스트랩 → HA 준비 완료 상태.
+# 결과:
+#   - /etc/kubernetes/admin.conf 생성 (cluster-admin kubeconfig)
+#   - master-01 이 control-plane 노드로 등록 (NotReady — CNI 미설치 상태)
+#   - hostvars 에 join 명령 2개 set_fact:
+#       k8s_join_command_worker  : worker join 명령
+#       k8s_join_command_cp      : control-plane join 명령 (--control-plane + cert-key)
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. 이미 init 됐는지 확인 (재실행 안전성)
+# ------------------------------------------------------------
+- name: "bootstrap | Check if cluster is already initialized"
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: _admin_conf
+
+- name: "bootstrap | Skip — admin.conf already exists"
+  ansible.builtin.debug:
+    msg: "Cluster already initialized on {{ inventory_hostname }}; skipping kubeadm init."
+  when: _admin_conf.stat.exists
+
+# ------------------------------------------------------------
+# 2. kubeadm-config.yaml 배포
+# ------------------------------------------------------------
+- name: "bootstrap | Ensure /etc/kubernetes exists"
+  ansible.builtin.file:
+    path: /etc/kubernetes
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: "bootstrap | Render kubeadm-config.yaml"
+  ansible.builtin.template:
+    src: kubeadm/kubeadm-config.yaml.j2
+    dest: /etc/kubernetes/kubeadm-config.yaml
+    owner: root
+    group: root
+    mode: '0600'
+    backup: true
+
+# ------------------------------------------------------------
+# 3. 이미지 사전 pull (속도 + 에러 가독성)
+# ------------------------------------------------------------
+- name: "bootstrap | Pre-pull control-plane images"
+  ansible.builtin.command:
+    cmd: kubeadm config images pull --config /etc/kubernetes/kubeadm-config.yaml
+  when: not _admin_conf.stat.exists
+  changed_when: true
+
+# ------------------------------------------------------------
+# 4. kubeadm init (Cilium 이 kube-proxy 대체 → skip-phases)
+# ------------------------------------------------------------
+- name: "bootstrap | Run kubeadm init"
+  ansible.builtin.command:
+    cmd: >
+      kubeadm init
+      --config /etc/kubernetes/kubeadm-config.yaml
+      --upload-certs
+      --skip-phases={{ k8s_skip_phases_init | join(',') }}
+  register: _kubeadm_init
+  when: not _admin_conf.stat.exists
+  changed_when: true
+
+- name: "bootstrap | Show last 30 lines of kubeadm init output"
+  ansible.builtin.debug:
+    msg: "{{ _kubeadm_init.stdout_lines[-30:] }}"
+  when:
+    - not _admin_conf.stat.exists
+    - _kubeadm_init.stdout_lines is defined
+
+# ------------------------------------------------------------
+# 5. admin kubeconfig 를 ansible user 에게 설치
+# ------------------------------------------------------------
+- name: "bootstrap | Ensure ~/.kube exists for {{ ansible_user }}"
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0700'
+
+- name: "bootstrap | Copy admin.conf → ~/.kube/config"
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0600'
+    force: true
+
+# ------------------------------------------------------------
+# 6. join 명령 생성 → 다음 sub-task (join_cp, join_worker) 가
+#    hostvars 로 읽음
+# ------------------------------------------------------------
+# 토큰 / cert-key 는 시간 제한이 있으므로 매번 새로 발급.
+# bootstrap.yml 실행 직후 같은 ansible-playbook 호출에서
+# join_cp / join_worker 가 도는 것이 전제.
+- name: "bootstrap | Generate fresh join token"
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: _join_cmd
+  changed_when: false
+
+- name: "bootstrap | Upload certs (returns certificate-key)"
+  ansible.builtin.command:
+    cmd: kubeadm init phase upload-certs --upload-certs
+  register: _upload_certs
+  changed_when: false
+
+- name: "bootstrap | Set facts | join commands (worker / control-plane)"
+  ansible.builtin.set_fact:
+    k8s_join_command_worker: "{{ _join_cmd.stdout | trim }}"
+    k8s_certificate_key: "{{ _upload_certs.stdout_lines[-1] | trim }}"
+
+- name: "bootstrap | Set fact | control-plane join command"
+  ansible.builtin.set_fact:
+    k8s_join_command_cp: >-
+      {{ k8s_join_command_worker }}
+      --control-plane
+      --certificate-key {{ k8s_certificate_key }}
+
+- name: "bootstrap | Show join commands (only with -v)"
+  ansible.builtin.debug:
+    msg:
+      - "WORKER join: {{ k8s_join_command_worker }}"
+      - "CP     join: {{ k8s_join_command_cp }}"
+    verbosity: 1
+
+# ------------------------------------------------------------
+# 7. fail-fast 검증
+# ------------------------------------------------------------
+- name: "bootstrap | Verify | API server responds"
+  ansible.builtin.command:
+    cmd: kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes
+  register: _v_kget
+  retries: 10
+  delay: 6
+  until: _v_kget.rc == 0
+  changed_when: false
+
+- name: "bootstrap | Show node list (master-01 NotReady = 정상, CNI 미설치 단계)"
+  ansible.builtin.debug:
+    msg: "{{ _v_kget.stdout_lines }}"

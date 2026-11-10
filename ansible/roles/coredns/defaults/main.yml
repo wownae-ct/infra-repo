@@ -1,0 +1,74 @@
+---
+# ============================================================
+# coredns role - defaults
+# ============================================================
+# 목적:
+#   CoreDNS 의 Corefile 에 hosts 블록을 삽입/갱신해서, 클러스터 안 Pod 들이
+#   *.internal / example.ddns.net 같은 사설 도메인을 resolve 할 수 있게 만든다.
+#
+# 디자인 (자동화 관점):
+#   - ConfigMap 전체 덮어쓰지 않음 (kubeadm 의 default Corefile 보존)
+#   - hosts 블록만 BEGIN/END 마커 사이에 idempotent 하게 patch
+#   - kubeadm 업그레이드로 Corefile 신규 plugin 추가돼도 우리 영역만 덮어쓰면 됨
+#
+# 흐름:
+#   1. ConfigMap 의 .data.Corefile 추출
+#   2. BEGIN/END 마커 사이 영역을 우리 hosts 블록으로 교체 (또는 처음이면 ".:53" 안에 삽입)
+#   3. 결과가 다르면 ConfigMap kubectl apply
+#   4. 변경 있을 때만 CoreDNS Deployment rollout restart
+# ============================================================
+
+# ============================================================
+# Target
+# ============================================================
+coredns_namespace: "kube-system"
+coredns_configmap: "coredns"
+coredns_deployment: "coredns"
+coredns_kubeconfig: "/etc/kubernetes/admin.conf"
+
+# ============================================================
+# Hosts block markers
+# ============================================================
+# 이 두 마커 사이 영역만 ansible 이 관리. 마커 밖은 손대지 않음.
+coredns_hosts_marker_begin: "# BEGIN ANSIBLE MANAGED HOSTS"
+coredns_hosts_marker_end:   "# END ANSIBLE MANAGED HOSTS"
+
+# ============================================================
+# Hosts entries
+# ============================================================
+# 백업 환경의 hosts 블록 그대로 복원.
+# IP → 도메인(들) 매핑.
+#
+# 10.98.1.250 = Istio ingressgateway LB IP (MetalLB pool 첫 IP)
+# 10.98.1.230 = bastion (nginx reverse proxy + DDNS endpoint)
+coredns_hosts_entries:
+  - ip: "10.98.1.250"
+    hostnames:
+      - "argocd.internal"
+      - "grafana.internal"
+      - "jenkins.internal"
+      - "loki.internal"
+      - "longhorn.internal"
+      - "minio.internal"
+      - "web.internal"
+  - ip: "10.98.1.230"
+    hostnames:
+      - "example.ddns.net"
+      - "s3.example.ddns.net"
+
+# ============================================================
+# Verify
+# ============================================================
+# verify sub-task 가 클러스터 안 임시 Pod 띄워서 nslookup 으로 검증.
+# 대표 도메인 몇 개만 (모두 같은 hosts plugin 거치니까)
+coredns_verify_domains:
+  - { domain: "argocd.internal",       expect: "10.98.1.250" }
+  - { domain: "longhorn.internal",     expect: "10.98.1.250" }
+  - { domain: "web.internal",          expect: "10.98.1.250" }
+  - { domain: "example.ddns.net",        expect: "10.98.1.230" }
+  - { domain: "s3.example.ddns.net",     expect: "10.98.1.230" }
+
+# Verify Pod 설정 (busybox)
+coredns_verify_pod_name: "coredns-verify"
+coredns_verify_pod_image: "busybox:1.36"
+coredns_verify_pod_namespace: "default"

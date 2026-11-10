@@ -1,0 +1,31 @@
+# 실제 값은 all.yml에 채우고 ansible-vault로 암호화합니다(커밋하지 않음).
+#   ansible-vault encrypt_string '<값>' --name vault_example
+# 플레이북은 --ask-vault-pass로 실행합니다.
+ansible_become_pass: CHANGE_ME
+
+vault_bastion_wg_private_key: CHANGE_ME
+vault_bastion_wg_peer_public_key: CHANGE_ME
+vault_storage_minio_root_user: CHANGE_ME
+vault_storage_minio_root_password: CHANGE_ME
+vault_minio_app_access_key: CHANGE_ME
+vault_minio_app_secret_key: CHANGE_ME
+vault_storage_smb_laputa_password: CHANGE_ME
+vault_storage_smb_totoro_password: CHANGE_ME
+vault_db_app_password_hash: CHANGE_ME
+vault_k8s_keepalived_auth_pass: CHANGE_ME
+vault_k8s_haproxy_stats_pass: CHANGE_ME
+vault_longhorn_r2_access_key_id: CHANGE_ME
+vault_longhorn_r2_secret_access_key: CHANGE_ME
+vault_longhorn_r2_endpoint: CHANGE_ME
+vault_argocd_admin_password_bcrypt: CHANGE_ME
+vault_argocd_admin_password: CHANGE_ME
+vault_github_pat: CHANGE_ME
+vault_github_username: CHANGE_ME
+vault_aws_access_key: CHANGE_ME
+vault_aws_secret_key: CHANGE_ME
+vault_jenkins_ecr_registry: CHANGE_ME
+vault_jenkins_github_infra_ssh_key: CHANGE_ME
+vault_jenkins_github_app_ssh_key: CHANGE_ME
+vault_jenkins_admin_user: CHANGE_ME
+vault_jenkins_admin_password: CHANGE_ME
+vault_grafana_admin_password: CHANGE_ME

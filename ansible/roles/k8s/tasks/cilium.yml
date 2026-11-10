@@ -1,0 +1,186 @@
+---
+# ============================================================
+# roles/k8s/tasks/cilium.yml — sub-task 8
+# ============================================================
+# 대상: k8s-master-01 단독 (helm install 만 1회)
+# 호출: include_role: { name: k8s } vars: { k8s_sub_task: cilium }
+#
+# 방식:
+#   - master-01 에 helm binary 설치 (apt)
+#   - master-01 에서 helm 으로 cilium 1.19.1 설치
+#   - kubectl 로 cilium pod 가 Ready 될 때까지 wait
+#
+# kubernetes.core.helm 컬렉션 대신 command 모듈을 쓰는 이유:
+#   - python3-kubernetes 의존성 회피 (해당 모듈은 control node 에서 동작)
+#   - 디버깅이 쉬움 (실행 명령이 그대로 보임)
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. helm binary 설치 (없으면 — GitHub releases 에서 직접 다운로드)
+# ------------------------------------------------------------
+- name: "cilium | Check if helm is installed"
+  ansible.builtin.command: which helm
+  register: _which_helm
+  changed_when: false
+  failed_when: false
+
+- name: "cilium | Install helm from GitHub release"
+  when: _which_helm.rc != 0
+  block:
+    - name: "cilium | Download helm {{ k8s_helm_version }} tarball"
+      ansible.builtin.get_url:
+        url: "https://get.helm.sh/helm-{{ k8s_helm_version }}-linux-amd64.tar.gz"
+        dest: "/tmp/helm-{{ k8s_helm_version }}.tar.gz"
+        mode: '0644'
+        checksum: "{{ k8s_helm_sha256 }}"
+
+    - name: "cilium | Extract helm tarball"
+      ansible.builtin.unarchive:
+        src: "/tmp/helm-{{ k8s_helm_version }}.tar.gz"
+        dest: /tmp
+        remote_src: true
+
+    - name: "cilium | Install helm binary to /usr/local/bin"
+      ansible.builtin.copy:
+        src: /tmp/linux-amd64/helm
+        dest: /usr/local/bin/helm
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: "cilium | Cleanup helm tarball"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/helm-{{ k8s_helm_version }}.tar.gz"
+        - "/tmp/linux-amd64"
+
+# ------------------------------------------------------------
+# 2. cilium helm repo 등록
+# ------------------------------------------------------------
+- name: "cilium | Add cilium helm repo"
+  ansible.builtin.command:
+    cmd: "helm repo add cilium {{ k8s_cilium_helm_repo }}"
+  register: _repo_add
+  changed_when: "'has been added' in _repo_add.stdout"
+  failed_when:
+    - _repo_add.rc != 0
+    - "'already exists' not in _repo_add.stderr"
+
+- name: "cilium | helm repo update"
+  ansible.builtin.command: helm repo update cilium
+  changed_when: false
+
+# ------------------------------------------------------------
+# 3. values.yaml 배포
+# ------------------------------------------------------------
+- name: "cilium | Render values.yaml"
+  ansible.builtin.template:
+    src: cilium/values.yaml.j2
+    dest: /etc/kubernetes/cilium-values.yaml
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+
+# ------------------------------------------------------------
+# 4. helm install (or upgrade) — 멱등성 강화
+# ------------------------------------------------------------
+# 현재 cilium release 가 있는지 + values 가 동일한지 먼저 확인 후
+# 실제 변경이 필요할 때만 upgrade 호출.
+
+- name: "cilium | Check current cilium helm release status"
+  ansible.builtin.command:
+    cmd: >
+      helm status cilium
+      --namespace {{ k8s_cilium_namespace }}
+      --kubeconfig /etc/kubernetes/admin.conf
+      -o json
+  register: _cilium_status
+  changed_when: false
+  failed_when: false
+
+- name: "cilium | Get current cilium values (if installed)"
+  ansible.builtin.command:
+    cmd: >
+      helm get values cilium
+      --namespace {{ k8s_cilium_namespace }}
+      --kubeconfig /etc/kubernetes/admin.conf
+      -o yaml
+  register: _cilium_current_values
+  changed_when: false
+  failed_when: false
+  when: _cilium_status.rc == 0
+
+- name: "cilium | Read rendered values file"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/cilium-values.yaml
+  register: _cilium_rendered
+
+- name: "cilium | Decide if install/upgrade is needed"
+  ansible.builtin.set_fact:
+    _cilium_install_needed: >-
+      {{
+        _cilium_status.rc != 0
+        or (_cilium_current_values.stdout | default('') | from_yaml | default({}))
+           != (_cilium_rendered.content | b64decode | from_yaml)
+      }}
+
+- name: "cilium | helm upgrade --install cilium {{ k8s_cilium_version }}"
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install cilium cilium/cilium
+      --version {{ k8s_cilium_version }}
+      --namespace {{ k8s_cilium_namespace }}
+      --values /etc/kubernetes/cilium-values.yaml
+      --wait
+      --timeout 10m
+      --kubeconfig /etc/kubernetes/admin.conf
+  register: _helm_out
+  when: _cilium_install_needed | bool
+  changed_when: true
+
+- name: "cilium | Show helm output (last 30 lines)"
+  ansible.builtin.debug:
+    msg: "{{ _helm_out.stdout_lines[-30:] }}"
+  when:
+    - _cilium_install_needed | bool
+    - _helm_out.stdout_lines is defined
+
+# ------------------------------------------------------------
+# 5. 검증 — 모든 cilium pod Ready + 모든 노드 Ready
+# ------------------------------------------------------------
+- name: "cilium | Wait for cilium DaemonSet pods Ready (up to 5min)"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig=/etc/kubernetes/admin.conf
+      -n {{ k8s_cilium_namespace }}
+      wait --for=condition=Ready pods -l k8s-app=cilium --timeout=300s
+  register: _wait_cilium
+  changed_when: false
+  retries: 3
+  delay: 10
+  until: _wait_cilium.rc == 0
+
+- name: "cilium | Wait for all nodes Ready (CNI 깔리고 나면 자동 전환)"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig=/etc/kubernetes/admin.conf
+      wait --for=condition=Ready nodes --all --timeout=300s
+  register: _wait_nodes
+  changed_when: false
+  retries: 3
+  delay: 10
+  until: _wait_nodes.rc == 0
+
+- name: "cilium | Final node list"
+  ansible.builtin.command:
+    cmd: kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes -o wide
+  register: _final_nodes
+  changed_when: false
+
+- name: "cilium | Show final node status"
+  ansible.builtin.debug:
+    msg: "{{ _final_nodes.stdout_lines }}"

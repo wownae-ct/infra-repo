@@ -1,0 +1,45 @@
+---
+# ============================================================
+# Phase 6b — MetalLB 부트스트랩
+# ============================================================
+# 대상: k8s-master-01 (helm + kubectl 실행)
+#
+# 사전 조건:
+#   - Phase 5f 완료 (6대 노드 Ready)
+#   - (sealed-secrets 와 무관, 독립 컴포넌트)
+#
+# Sub-task 순서:
+#   1. helm       — chart install (controller + speaker) + CRD wait
+#   2. resources  — IPAddressPool (service-pool) + L2Advertisement (default)
+#   3. verify     — controller/speaker Ready + pool 등록 확인
+#
+# 후속:
+#   13-longhorn.yml     (6c)
+#   14-argocd.yml       (6d)
+#   15-argocd-apps.yml  (6e)
+# ============================================================
+
+- name: "Phase 6b | MetalLB bootstrap"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "6b.1 → helm (controller + speaker)"
+      ansible.builtin.include_role:
+        name: metallb
+      vars:
+        metallb_sub_task: helm
+
+    - name: "6b.2 → resources (IPAddressPool + L2Advertisement)"
+      ansible.builtin.include_role:
+        name: metallb
+      vars:
+        metallb_sub_task: resources
+
+    - name: "6b.3 → verify"
+      ansible.builtin.include_role:
+        name: metallb
+      vars:
+        metallb_sub_task: verify

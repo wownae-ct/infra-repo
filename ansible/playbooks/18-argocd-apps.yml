@@ -1,0 +1,213 @@
+---
+# ============================================================
+# ArgoCD App-of-Apps kickoff
+# ============================================================
+# 대상: k8s-master-01 (kubectl)
+#
+# 목적:
+#   ~/infra-repo/root-app.yaml 을 클러스터에 apply.
+#   apply 후 ArgoCD 가 자동으로 apps/ 폴더 스캔 → 각 *-app.yaml 을
+#   Application 으로 생성 → 각 Application 이 자기 chart sync.
+#
+# 사전 조건:
+#   - ArgoCD 부트스트랩 완료 (chart, repo-creds)
+#   - infra-repo 의 root-app.yaml repoURL = HTTPS (PAT 와 매칭)
+#   - infra-repo 의 모든 *-app.yaml repoURL = HTTPS
+#
+# 디자인 (Notion 인계 문서):
+#   - role 없이 playbook 한 개
+#   - root-app.yaml 만 apply, 나머지는 ArgoCD 가 알아서
+#   - 멱등성: kubectl apply (이미 있으면 unchanged)
+# ============================================================
+
+- name: "ArgoCD App-of-Apps kickoff"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    argocd_kubeconfig: "/etc/kubernetes/admin.conf"
+    argocd_namespace: "argocd"
+    # ansible controller 로컬 PC의 admin 홈 디렉토리
+    root_app_local_path: "{{ lookup('env', 'HOME') }}/infra-repo/root-app.yaml"
+    root_app_remote_path: "/etc/kubernetes/root-app.yaml"
+    expected_child_apps:
+      - argocd
+      - grafana
+      - istio-gateway
+      - jenkins
+      - kiali
+      - loki
+      - longhorn
+      - minio
+      - portfolio-web
+      - prometheus
+
+  tasks:
+    # ------------------------------------------------------------
+    # 1. root-app.yaml 을 master-01 로 전달
+    # ------------------------------------------------------------
+    # ansible controller 의 ~/infra-repo/root-app.yaml 을 master-01 로 복사.
+    # 이러면 master-01 에 infra-repo clone 안 해도 됨.
+    - name: "1) Read local root-app.yaml from ansible controller"
+      ansible.builtin.slurp:
+        src: "{{ root_app_local_path }}"
+      register: _root_app_content
+      delegate_to: localhost
+      become: false
+
+    - name: "1) Write root-app.yaml to master-01"
+      ansible.builtin.copy:
+        content: "{{ _root_app_content.content | b64decode }}"
+        dest: "{{ root_app_remote_path }}"
+        owner: root
+        group: root
+        mode: '0644'
+        backup: true
+
+    # ------------------------------------------------------------
+    # 2. root-app apply
+    # ------------------------------------------------------------
+    - name: "2) Apply root-app.yaml"
+      ansible.builtin.shell: |
+        kubectl --kubeconfig={{ argocd_kubeconfig }} \
+          apply -f {{ root_app_remote_path }}
+      args:
+        executable: /bin/bash
+      register: _root_apply
+      changed_when: >-
+        'created' in _root_apply.stdout
+        or 'configured' in _root_apply.stdout
+
+    - name: "2) Report apply result"
+      ansible.builtin.debug:
+        msg: "{{ _root_apply.stdout_lines }}"
+
+    # ------------------------------------------------------------
+    # 3. root-app 이 git 한 번 sync 할 시간 대기
+    # ------------------------------------------------------------
+    # ArgoCD 의 reconciliation interval 은 기본 3분 polling 이지만,
+    # automated.selfHeal=true 라서 root-app apply 직후 controller 가 즉시 sync 시도.
+    # 보통 30~60초 안에 child Application 들이 만들어짐.
+    - name: "3) Wait for child Applications to be created (max 3min)"
+      ansible.builtin.shell: |
+        kubectl --kubeconfig={{ argocd_kubeconfig }} \
+          -n {{ argocd_namespace }} \
+          get applications.argoproj.io -o name 2>/dev/null | wc -l
+      args:
+        executable: /bin/bash
+      register: _apps_count
+      changed_when: false
+      # root-app 1개 + child 10개 = 11개 (또는 그 이상) 까지 기다림
+      until: _apps_count.stdout | int >= ((expected_child_apps | length) + 1)
+      retries: 30
+      delay: 6
+
+    # ------------------------------------------------------------
+    # 4. Applications 목록 확인
+    # ------------------------------------------------------------
+    - name: "4) List ArgoCD Applications"
+      ansible.builtin.shell: |
+        kubectl --kubeconfig={{ argocd_kubeconfig }} \
+          -n {{ argocd_namespace }} \
+          get applications.argoproj.io \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}'
+      args:
+        executable: /bin/bash
+      register: _apps_list
+      changed_when: false
+
+    - name: "4) Show Applications (name / sync / health)"
+      ansible.builtin.debug:
+        msg: "{{ _apps_list.stdout_lines }}"
+
+    # ------------------------------------------------------------
+    # 5. 첫 sync 까진 시간 걸릴 수 있음
+    # ------------------------------------------------------------
+    - name: "5) Wait for first sync round (max 5min)"
+      ansible.builtin.shell: |
+        kubectl --kubeconfig={{ argocd_kubeconfig }} \
+          -n {{ argocd_namespace }} \
+          get applications.argoproj.io \
+          -o jsonpath='{range .items[*]}{.status.sync.status}{"\n"}{end}' \
+        | grep -c "^Synced$" || echo 0
+      args:
+        executable: /bin/bash
+      register: _synced_count
+      changed_when: false
+      retries: 50
+      delay: 6
+      # 모든 앱 (root-app 1 + child 10 = 11개) sync 되길 기다림
+      until: _synced_count.stdout | int >= ((expected_child_apps | length) + 1)
+      ignore_errors: true   # 첫 sync 는 helm 의존성 다운로드로 오래 걸릴 수 있어 무리하게 단언 X
+
+    # ------------------------------------------------------------
+    # 6. ArgoCD 제외 리소스 적용 (resource.exclusions: Endpoints)
+    # ------------------------------------------------------------
+    # ArgoCD argocd-cm 에서 Endpoints 가 전역 제외되어 있어
+    # mariadb-external Endpoints 는 ArgoCD 가 관리하지 않음.
+    # infra-repo/apps/portfolio-web/templates/mariadb-external.yaml 에
+    # 정의되어 있으나 ArgoCD 가 무시하므로 여기서 직접 apply.
+    - name: "6) Apply mariadb-external Endpoints (ArgoCD excluded resource)"
+      ansible.builtin.shell: |
+        cat <<'MANIFEST' | kubectl --kubeconfig={{ argocd_kubeconfig }} apply -f -
+        apiVersion: v1
+        kind: Endpoints
+        metadata:
+          name: mariadb-external
+          namespace: portfolio-web
+        subsets:
+          - addresses:
+              - ip: 10.98.1.233
+            ports:
+              - port: 3306
+        MANIFEST
+      args:
+        executable: /bin/bash
+      register: _ep_apply
+      changed_when: "'created' in _ep_apply.stdout or 'configured' in _ep_apply.stdout"
+
+    - name: "6) Verify mariadb-external Endpoints"
+      ansible.builtin.shell: |
+        kubectl --kubeconfig={{ argocd_kubeconfig }} \
+          -n portfolio-web get endpoints mariadb-external \
+          -o jsonpath='{.subsets[0].addresses[0].ip}:{.subsets[0].ports[0].port}'
+      args:
+        executable: /bin/bash
+      register: _ep_check
+      changed_when: false
+
+    - name: "6) Endpoints result"
+      ansible.builtin.debug:
+        msg: "mariadb-external: {{ _ep_check.stdout }} {{ (_ep_check.stdout == '10.98.1.233:3306') | ternary('✅', '❌') }}"
+
+    # ------------------------------------------------------------
+    # 7. 최종 리포트
+    # ------------------------------------------------------------
+    - name: "7) Final report — current sync/health status"
+      ansible.builtin.shell: |
+        kubectl --kubeconfig={{ argocd_kubeconfig }} \
+          -n {{ argocd_namespace }} \
+          get applications.argoproj.io \
+          -o custom-columns='NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REVISION:.status.sync.revision' \
+          --no-headers
+      args:
+        executable: /bin/bash
+      register: _final
+      changed_when: false
+
+    - name: "7) Show final status"
+      ansible.builtin.debug:
+        msg: "{{ _final.stdout_lines }}"
+
+    - name: "7) Hint — if any OutOfSync/Degraded"
+      ansible.builtin.debug:
+        msg:
+          - "Applications가 OutOfSync / Degraded 상태이면 정상일 수 있음 (첫 sync 진행 중)."
+          - "확인:"
+          - "  kubectl -n argocd describe application <name>"
+          - "  kubectl -n argocd logs deployment/argocd-application-controller --tail=50"
+          - ""
+          - "ArgoCD UI 접속 후 각 app 의 sync 상태 확인 권장:"
+          - "  kubectl -n argocd port-forward svc/argocd-server 8080:80"

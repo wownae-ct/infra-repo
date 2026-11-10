@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+# istio/istiod chart values — defaults/main.yml 의 istio_istiod_chart_values dict 직렬화
+
+{{ istio_istiod_chart_values | to_nice_yaml(indent=2, width=200) }}

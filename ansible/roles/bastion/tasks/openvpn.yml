@@ -1,0 +1,188 @@
+---
+# ============================================================
+# bastion role - openvpn sub-task
+# ============================================================
+# 외부 → 내부망 (10.98.1.0/24) 접근 VPN 서버.
+# 인증서/키는 백업 그대로 재사용 (files/openvpn/).
+#   - ca.crt, server.crt, dh2048.pem : 평문 (퍼블릭)
+#   - server.key : vault 암호화
+# ============================================================
+
+# ---------- 패키지 ----------
+
+- name: Install openvpn
+  ansible.builtin.apt:
+    name:
+      - openvpn
+      - openvpn-systemd-resolved
+    state: present
+  become: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  tags: [bastion, openvpn, packages]
+
+
+# ---------- 인증서/키 배포 ----------
+
+- name: Deploy openvpn CA certificate
+  ansible.builtin.copy:
+    src: openvpn/ca.crt
+    dest: /etc/openvpn/ca.crt
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: restart openvpn
+  tags: [bastion, openvpn, certs]
+
+- name: Deploy openvpn server certificate
+  ansible.builtin.copy:
+    src: openvpn/server.crt
+    dest: /etc/openvpn/server.crt
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: restart openvpn
+  tags: [bastion, openvpn, certs]
+
+- name: Deploy openvpn server private key (vault-encrypted)
+  ansible.builtin.copy:
+    src: openvpn/server.key
+    dest: /etc/openvpn/server.key
+    owner: root
+    group: root
+    mode: '0600'        # 시크릿 - root만 읽기
+  become: true
+  notify: restart openvpn
+  tags: [bastion, openvpn, certs]
+
+- name: Deploy openvpn DH parameters
+  ansible.builtin.copy:
+    src: openvpn/dh2048.pem
+    dest: /etc/openvpn/dh2048.pem
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: restart openvpn
+  tags: [bastion, openvpn, certs]
+
+
+# ---------- 설정 파일 ----------
+
+- name: Render /etc/openvpn/server.conf
+  ansible.builtin.template:
+    src: openvpn/server.conf.j2
+    dest: /etc/openvpn/server.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  notify: restart openvpn
+  tags: [bastion, openvpn, config]
+
+
+# ---------- 로그 디렉토리 ----------
+
+- name: Ensure /var/log/openvpn directory exists
+  ansible.builtin.file:
+    path: /var/log/openvpn
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  tags: [bastion, openvpn, config]
+
+
+# ---------- iptables INPUT/FORWARD (1194/udp + tun0 트래픽) ----------
+
+- name: Ensure INPUT ACCEPT for OpenVPN from external interface
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: "{{ bastion_iptables_external_iface }}"
+    protocol: udp
+    destination_port: "{{ bastion_openvpn_port }}"
+    jump: ACCEPT
+    state: present
+    comment: "bastion: openvpn"
+  become: true
+  notify: save iptables rules
+  tags: [bastion, openvpn, iptables]
+
+- name: Ensure FORWARD ACCEPT for VPN → internal (tun0 → eth0)
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: tun0
+    out_interface: "{{ bastion_iptables_internal_iface }}"
+    jump: ACCEPT
+    state: present
+    comment: "bastion: openvpn VPN → internal"
+  become: true
+  notify: save iptables rules
+  tags: [bastion, openvpn, iptables]
+
+- name: Ensure FORWARD ACCEPT for internal → VPN (eth0 → tun0)
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: "{{ bastion_iptables_internal_iface }}"
+    out_interface: tun0
+    jump: ACCEPT
+    state: present
+    comment: "bastion: openvpn internal → VPN"
+  become: true
+  notify: save iptables rules
+  tags: [bastion, openvpn, iptables]
+
+
+# ---------- 서비스 ----------
+
+- name: Ensure openvpn@server enabled and running
+  ansible.builtin.systemd:
+    name: openvpn@server
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [bastion, openvpn, service]
+
+- name: Flush handlers (openvpn 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [bastion, openvpn]
+
+
+# ---------- 검증 ----------
+
+- name: Verify - openvpn service running
+  ansible.builtin.systemd:
+    name: openvpn@server
+    state: started
+  become: true
+  register: ovpn_running
+  changed_when: false
+  failed_when: ovpn_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [bastion, openvpn, verify]
+
+- name: Verify - openvpn listening on configured port
+  ansible.builtin.shell: |
+    ss -ulnp | grep -E ":{{ bastion_openvpn_port }}\s" || exit 1
+  args:
+    executable: /bin/bash
+  become: true
+  register: ovpn_listen
+  changed_when: false
+  failed_when: ovpn_listen.rc != 0
+  when: not ansible_check_mode
+  tags: [bastion, openvpn, verify]
+
+- name: Verify - tun0 interface up
+  ansible.builtin.command: ip link show tun0
+  become: true
+  register: tun0_check
+  changed_when: false
+  failed_when: tun0_check.rc != 0
+  when: not ansible_check_mode
+  tags: [bastion, openvpn, verify]

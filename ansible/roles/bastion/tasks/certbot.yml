@@ -1,0 +1,114 @@
+---
+# ============================================================
+# bastion role - certbot sub-task
+# ============================================================
+# 기존 letsencrypt 인증서 복원 (백업 tarball 풀기).
+# certbot 패키지 설치 (renew 가능 상태).
+#
+# auto-renewal cron 은 cutover 후 외부 80 노출 시점에 활성화.
+# 지금은 패키지 + 파일만 박아두기.
+# ============================================================
+
+# ---------- 패키지 ----------
+
+- name: Install certbot
+  ansible.builtin.apt:
+    name:
+      - certbot
+      - python3-certbot-nginx
+    state: present
+  become: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  tags: [bastion, certbot, packages]
+
+
+# ---------- 인증서 디렉토리 복원 ----------
+
+- name: Ensure /etc/letsencrypt does not exist yet (clean slate check)
+  ansible.builtin.stat:
+    path: /etc/letsencrypt/live/{{ bastion_certbot_domain }}/fullchain.pem
+  become: true
+  register: letsencrypt_check
+  tags: [bastion, certbot, certs]
+
+- name: Extract letsencrypt backup (vault-encrypted tarball)
+  ansible.builtin.unarchive:
+    src: letsencrypt.tar.gz
+    dest: /etc/
+    owner: root
+    group: root
+    creates: "/etc/letsencrypt/live/{{ bastion_certbot_domain }}/fullchain.pem"
+  become: true
+  tags: [bastion, certbot, certs]
+
+- name: Ensure /etc/letsencrypt root permissions (0755)
+  ansible.builtin.file:
+    path: /etc/letsencrypt
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  tags: [bastion, certbot, certs]
+
+- name: Ensure live + archive + accounts permissions
+  ansible.builtin.file:
+    path: "/etc/letsencrypt/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+    recurse: false
+  become: true
+  loop:
+    - live
+    - archive
+    - accounts
+  tags: [bastion, certbot, certs]
+
+
+# ---------- 검증 ----------
+
+- name: Verify - fullchain.pem exists (symlink resolves)
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ bastion_certbot_domain }}/fullchain.pem"
+    follow: true
+  become: true
+  register: fullchain_stat
+  failed_when: not fullchain_stat.stat.exists
+  when: not ansible_check_mode
+  tags: [bastion, certbot, verify]
+
+- name: Verify - privkey.pem exists (symlink resolves)
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ bastion_certbot_domain }}/privkey.pem"
+    follow: true
+  become: true
+  register: privkey_stat
+  failed_when: not privkey_stat.stat.exists
+  when: not ansible_check_mode
+  tags: [bastion, certbot, verify]
+
+- name: Verify - certbot can read certificates
+  ansible.builtin.command: certbot certificates
+  become: true
+  register: certbot_certs
+  changed_when: false
+  failed_when:
+    - certbot_certs.rc != 0
+    - "'No certs found' not in certbot_certs.stdout"
+  when: not ansible_check_mode
+  tags: [bastion, certbot, verify]
+
+- name: Verify - certificate not expired (openssl)
+  ansible.builtin.shell: |
+    openssl x509 -in /etc/letsencrypt/live/{{ bastion_certbot_domain }}/fullchain.pem -noout -checkend 0
+  args:
+    executable: /bin/bash
+  become: true
+  register: cert_valid
+  changed_when: false
+  failed_when: cert_valid.rc != 0
+  when: not ansible_check_mode
+  tags: [bastion, certbot, verify]

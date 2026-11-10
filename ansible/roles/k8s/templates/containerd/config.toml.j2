@@ -1,0 +1,52 @@
+# {{ ansible_managed }}
+# /etc/containerd/config.toml
+#
+# containerd 2.x (Ubuntu 22.04 apt 기본) 용 설정.
+#
+# 핵심 두 가지:
+#   1) SystemdCgroup = true
+#      - kubelet 의 cgroupDriver=systemd 와 반드시 일치해야 함.
+#      - cgroupv2 + systemd 환경에서 표준.
+#      - 어긋나면 "failed to create pod sandbox" 로 노드 NotReady.
+#
+#   2) sandbox_image
+#      - kubeadm 이 기대하는 pause 이미지 경로와 맞춘다.
+#      - 기본은 registry.k8s.io/pause:3.10 (k8s 1.34 기준).
+#
+# 이 두 옵션 외에는 패키지 기본값을 따른다.
+# (운영 중 알려진 'systemd-cgroup driver missing' 문제 외의 튜닝은 안 한다.)
+
+version = 2
+
+# ------------------------------------------------------------
+# 구식 CRI 경로 (containerd 1.7 호환, 2.x 에서도 여전히 인식)
+# ------------------------------------------------------------
+[plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "{{ k8s_containerd_sandbox_image | default('registry.k8s.io/pause:3.10') }}"
+
+  [plugins."io.containerd.grpc.v1.cri".containerd]
+    default_runtime_name = "runc"
+
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+        runtime_type = "io.containerd.runc.v2"
+
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+          SystemdCgroup = {{ k8s_containerd_systemd_cgroup | string | lower }}
+
+# ------------------------------------------------------------
+# 신식 CRI 경로 (containerd 2.x 신규 — runtime + images 분리됨)
+# ------------------------------------------------------------
+[plugins."io.containerd.cri.v1.runtime"]
+  [plugins."io.containerd.cri.v1.runtime".containerd]
+    default_runtime_name = "runc"
+
+    [plugins."io.containerd.cri.v1.runtime".containerd.runtimes]
+      [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc]
+        runtime_type = "io.containerd.runc.v2"
+
+        [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc.options]
+          SystemdCgroup = {{ k8s_containerd_systemd_cgroup | string | lower }}
+
+[plugins."io.containerd.cri.v1.images"]
+  sandbox_image = "{{ k8s_containerd_sandbox_image | default('registry.k8s.io/pause:3.10') }}"

@@ -1,0 +1,24 @@
+# /etc/chrony/chrony.conf - managed by Ansible (common role)
+# NTP 클라이언트 설정 (bastion 의 NTP 서버 역할은 bastion role 에서 별도 처리)
+
+# ---------- NTP 서버 목록 ----------
+{% for srv in common_ntp_servers %}
+server {{ srv }} iburst
+{% endfor %}
+
+# ---------- 기본 설정 ----------
+# drift 파일 (시계 보정 학습 데이터)
+driftfile /var/lib/chrony/chrony.drift
+
+# 큰 시간 차이는 step 으로 (처음 3번까지, 1초 이상 차이)
+makestep 1.0 3
+
+# RTC(하드웨어 시계) 동기화
+rtcsync
+
+# 로그
+logdir /var/log/chrony
+
+# ---------- Drop-in 디렉토리 ----------
+# bastion 등 role 별 추가 설정 (예: server mode 의 allow 디렉티브)
+confdir /etc/chrony/conf.d

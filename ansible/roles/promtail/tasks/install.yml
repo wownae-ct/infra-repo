@@ -1,0 +1,158 @@
+---
+# ============================================================
+# promtail/tasks/install.yml — sub-task 1
+# ============================================================
+# 대상: bastion, storage, db (3대)
+# - unzip 패키지 (바이너리 압축 해제용)
+# - promtail 바이너리 다운로드 (/usr/local/bin/promtail)
+# - config 디렉토리 + positions 디렉토리
+# - systemd 유닛 배포
+#
+# 멱등성:
+#   - 바이너리가 이미 있고 버전이 같으면 skip
+#   - systemd 유닛 diff 없으면 changed 안 됨
+#
+# 보안:
+#   - root 로 실행 (journal + 다양한 로그 파일 접근 필요)
+#   - systemd hardening (ProtectHome, NoNewPrivileges 등)
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. 패키지 (unzip — 바이너리 압축 해제용)
+# ------------------------------------------------------------
+- name: "install | Install unzip (Debian)"
+  ansible.builtin.apt:
+    name: unzip
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+  when: ansible_os_family == "Debian"
+  tags: [promtail, install, packages]
+
+- name: "install | Install unzip (RedHat)"
+  ansible.builtin.dnf:
+    name: unzip
+    state: present
+  become: true
+  when: ansible_os_family == "RedHat"
+  tags: [promtail, install, packages]
+
+# ------------------------------------------------------------
+# 2. 바이너리 다운로드 + 설치
+# ------------------------------------------------------------
+- name: "install | Check current promtail version"
+  ansible.builtin.command:
+    cmd: "{{ promtail_binary_path }} --version"
+  register: _promtail_ver
+  changed_when: false
+  failed_when: false
+  tags: [promtail, install, binary]
+
+- name: "install | Decide if binary download is needed"
+  ansible.builtin.set_fact:
+    _promtail_download_needed: >-
+      {{ _promtail_ver.rc != 0 or promtail_version not in (_promtail_ver.stdout | default('') + _promtail_ver.stderr | default('')) }}
+  tags: [promtail, install, binary]
+
+- name: "install | Download promtail {{ promtail_version }} zip"
+  ansible.builtin.get_url:
+    url: "{{ promtail_binary_url }}"
+    dest: "/tmp/promtail-{{ promtail_arch }}.zip"
+    mode: '0644'
+    force: true
+  become: true
+  when: _promtail_download_needed | bool
+  tags: [promtail, install, binary]
+
+- name: "install | Extract promtail binary"
+  ansible.builtin.unarchive:
+    src: "/tmp/promtail-{{ promtail_arch }}.zip"
+    dest: /tmp/
+    remote_src: true
+  become: true
+  when: _promtail_download_needed | bool
+  tags: [promtail, install, binary]
+
+- name: "install | Install promtail binary to {{ promtail_binary_path }}"
+  ansible.builtin.copy:
+    src: "/tmp/promtail-{{ promtail_arch }}"
+    dest: "{{ promtail_binary_path }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  when: _promtail_download_needed | bool
+  notify: restart promtail
+  tags: [promtail, install, binary]
+
+- name: "install | Cleanup download artifacts"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/promtail-{{ promtail_arch }}.zip"
+    - "/tmp/promtail-{{ promtail_arch }}"
+  become: true
+  when: _promtail_download_needed | bool
+  tags: [promtail, install, binary]
+
+# ------------------------------------------------------------
+# 3. 디렉토리
+# ------------------------------------------------------------
+- name: "install | Ensure config directory"
+  ansible.builtin.file:
+    path: "{{ promtail_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  tags: [promtail, install, dirs]
+
+- name: "install | Ensure positions directory"
+  ansible.builtin.file:
+    path: "{{ promtail_positions_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  tags: [promtail, install, dirs]
+
+# ------------------------------------------------------------
+# 4. systemd 유닛
+# ------------------------------------------------------------
+- name: "install | Deploy promtail systemd service"
+  ansible.builtin.template:
+    src: promtail.service.j2
+    dest: /etc/systemd/system/promtail.service
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  notify:
+    - daemon-reload promtail
+    - restart promtail
+  tags: [promtail, install, systemd]
+
+# ------------------------------------------------------------
+# 5. 즉시 fail-fast (다음 sub-task 의존)
+# ------------------------------------------------------------
+- name: "install | Verify | promtail binary executable"
+  ansible.builtin.command:
+    cmd: "{{ promtail_binary_path }} --version"
+  become: true
+  register: _v_version
+  changed_when: false
+  failed_when: _v_version.rc != 0
+  when: not ansible_check_mode
+  tags: [promtail, install, verify]
+
+- name: "install | Report installed version"
+  ansible.builtin.debug:
+    msg: "promtail version: {{ _v_version.stderr | default(_v_version.stdout) | trim }}"
+  when: not ansible_check_mode
+  tags: [promtail, install, verify]

@@ -1,0 +1,164 @@
+---
+# ============================================================
+# coredns/tasks/patch.yml — sub-task 1
+# ============================================================
+# 대상: k8s-master-01
+#
+# 흐름:
+#   1. 현재 ConfigMap 의 .data.Corefile 추출
+#   2. 새 hosts 블록 렌더 (templates/hosts-block.j2)
+#   3. 마커 사이 영역 교체 (이미 있으면) / .:53 블록 안에 삽입 (처음이면)
+#   4. 결과가 기존과 같으면 skip, 다르면 ConfigMap apply
+#   5. 변경 있을 때만 CoreDNS Deployment rollout restart
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. 현재 ConfigMap 의 Corefile 추출
+# ------------------------------------------------------------
+- name: "patch | Get current Corefile from ConfigMap"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ coredns_kubeconfig }} \
+      -n {{ coredns_namespace }} \
+      get configmap {{ coredns_configmap }} \
+      -o jsonpath='{.data.Corefile}'
+  args:
+    executable: /bin/bash
+  register: _corefile_current
+  changed_when: false
+  failed_when: _corefile_current.stdout | trim | length == 0
+
+# ------------------------------------------------------------
+# 2. 새 hosts 블록 렌더
+# ------------------------------------------------------------
+- name: "patch | Render new hosts block from template"
+  ansible.builtin.set_fact:
+    _hosts_block_new: "{{ lookup('template', 'hosts-block.j2') }}"
+
+# ------------------------------------------------------------
+# 3. 마커 사이 영역 교체 또는 신규 삽입 (Python 으로 일관 처리)
+# ------------------------------------------------------------
+# 로직:
+#   - 마커 둘 다 있으면 → 사이 영역을 _hosts_block_new 로 교체
+#   - 마커 없으면       → .:53 { ... } 블록 의 closing brace 바로 위에 삽입
+- name: "patch | Build new Corefile via python (replace or insert)"
+  ansible.builtin.shell: |
+    python3 <<'PYEOF'
+    import os, re, sys
+
+    cur = os.environ["CUR_COREFILE"]
+    new_block = os.environ["NEW_BLOCK"].rstrip() + "\n"
+    begin = os.environ["MARKER_BEGIN"]
+    end   = os.environ["MARKER_END"]
+
+    # 1) 마커 둘 다 있으면 그 사이 영역 교체
+    pattern = re.compile(
+        r"(^[ \t]*" + re.escape(begin) + r".*?" + re.escape(end) + r"[^\n]*\n)",
+        re.DOTALL | re.MULTILINE
+    )
+    if pattern.search(cur):
+        m = pattern.search(cur)
+        indent = re.match(r"^([ \t]*)", m.group(1)).group(1)
+        indented = "".join(indent + ln if ln.strip() else ln
+                           for ln in new_block.splitlines(keepends=True))
+        out = pattern.sub(indented, cur, count=1)
+    else:
+        # 2) 마커 없으면 .:53 블록의 closing brace 바로 위에 삽입
+        lines = cur.splitlines(keepends=True)
+        out_lines = []
+        in_53 = False
+        inserted = False
+        for ln in lines:
+            stripped = ln.strip()
+            if not in_53 and stripped.startswith(".:53") and stripped.endswith("{"):
+                in_53 = True
+                out_lines.append(ln)
+                continue
+            if in_53 and not inserted and ln.lstrip().startswith("}") and \
+               (len(ln) - len(ln.lstrip())) == 0:
+                indent = "    "
+                for blk_ln in new_block.splitlines(keepends=True):
+                    out_lines.append(indent + blk_ln if blk_ln.strip() else blk_ln)
+                inserted = True
+                in_53 = False
+            out_lines.append(ln)
+
+        if not inserted:
+            out_lines.append("\n" + new_block)
+        out = "".join(out_lines)
+
+    sys.stdout.write(out)
+    PYEOF
+  args:
+    executable: /bin/bash
+  environment:
+    CUR_COREFILE: "{{ _corefile_current.stdout }}"
+    NEW_BLOCK: "{{ _hosts_block_new }}"
+    MARKER_BEGIN: "{{ coredns_hosts_marker_begin }}"
+    MARKER_END: "{{ coredns_hosts_marker_end }}"
+  register: _new_corefile_result
+  changed_when: false
+
+# ------------------------------------------------------------
+# 4. 변경 필요 판정
+# ------------------------------------------------------------
+- name: "patch | Decide if Corefile update is needed"
+  ansible.builtin.set_fact:
+    _corefile_changed: "{{ _new_corefile_result.stdout != _corefile_current.stdout }}"
+
+- name: "patch | Report change status"
+  ansible.builtin.debug:
+    msg: "Corefile {{ 'will be updated' if _corefile_changed else 'already up-to-date (no change)' }}"
+
+# ------------------------------------------------------------
+# 5. ConfigMap apply (변경 있을 때만)
+# ------------------------------------------------------------
+- name: "patch | Write new Corefile to /tmp (for apply)"
+  ansible.builtin.copy:
+    dest: /tmp/coredns-corefile.txt
+    content: "{{ _new_corefile_result.stdout }}"
+    owner: root
+    group: root
+    mode: '0600'
+  when: _corefile_changed | bool
+
+- name: "patch | Apply new Corefile to ConfigMap"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ coredns_kubeconfig }} \
+      -n {{ coredns_namespace }} \
+      create configmap {{ coredns_configmap }} \
+      --from-file=Corefile=/tmp/coredns-corefile.txt \
+      --dry-run=client -o yaml \
+    | kubectl --kubeconfig={{ coredns_kubeconfig }} apply -f -
+  args:
+    executable: /bin/bash
+  register: _cm_apply
+  when: _corefile_changed | bool
+  changed_when: "'configured' in _cm_apply.stdout or 'created' in _cm_apply.stdout"
+
+- name: "patch | Remove temp Corefile"
+  ansible.builtin.file:
+    path: /tmp/coredns-corefile.txt
+    state: absent
+  when: _corefile_changed | bool
+
+# ------------------------------------------------------------
+# 6. CoreDNS Deployment rollout restart (변경 있을 때만)
+# ------------------------------------------------------------
+- name: "patch | Rollout restart CoreDNS Deployment"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ coredns_kubeconfig }}
+      -n {{ coredns_namespace }}
+      rollout restart deployment/{{ coredns_deployment }}
+  when: _corefile_changed | bool
+  changed_when: true
+
+- name: "patch | Wait for CoreDNS rollout to complete"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ coredns_kubeconfig }}
+      -n {{ coredns_namespace }}
+      rollout status deployment/{{ coredns_deployment }}
+      --timeout=120s
+  when: _corefile_changed | bool
+  changed_when: false

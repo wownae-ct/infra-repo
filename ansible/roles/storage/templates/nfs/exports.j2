@@ -1,0 +1,8 @@
+# /etc/exports - managed by Ansible (storage role)
+# NFS 공유 설정. 클라이언트는 10.98.1.240/28 (k8s 워커 대역) 만 유지.
+# 사라진 10.98.1.231 export 는 제거됨.
+
+{% for export in storage_nfs_exports %}
+{{ export.path }} {% for client in export.clients %}{{ client.ip }}({{ client.opts }}){% if not loop.last %} {% endif %}{% endfor %}
+
+{% endfor %}

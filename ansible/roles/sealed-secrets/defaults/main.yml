@@ -1,0 +1,78 @@
+---
+# ============================================================
+# sealed-secrets role - defaults
+# ============================================================
+# Bitnami Sealed Secrets controller 부트스트랩.
+#
+# 전략 (실무 표준 — A): Ansible 으로 helm 부트스트랩 → ArgoCD App-of-Apps 가
+# 이후 takeover. release name / namespace / chart version 을 일치시켜야
+# ArgoCD 첫 sync 시 충돌 없이 인수.
+#
+# 백업 sealing key 2개 (모두 active 라벨) 를 controller 설치 *전에*
+# 미리 apply → controller 가 기동되면서 기존 키 인식.
+# ============================================================
+
+# ============================================================
+# Helm release / chart
+# ============================================================
+# 백업 환경 동일 값:
+#   - chart : sealed-secrets/sealed-secrets v2.18.4
+#   - app   : v0.36.1
+#   - release name : sealed-secrets
+#   - namespace    : kube-system  (sealing key 와 동일 ns 필수)
+
+ss_helm_repo_name: "sealed-secrets"
+ss_helm_repo_url: "https://bitnami-labs.github.io/sealed-secrets"
+
+ss_helm_release_name: "sealed-secrets"
+ss_helm_chart: "sealed-secrets/sealed-secrets"
+ss_helm_chart_version: "2.18.4"
+ss_namespace: "kube-system"
+
+# kubeconfig (master-01 의 admin.conf 사용)
+ss_kubeconfig: "/etc/kubernetes/admin.conf"
+
+# ============================================================
+# Sealing key 복원
+# ============================================================
+# 백업 파일은 control node 의 migration-backup/ 안. git 추적 X (.gitignore).
+# master-01 의 /tmp 로 잠깐 옮겨 kubectl apply 후 즉시 삭제.
+
+ss_sealing_key_src: "{{ playbook_dir }}/../migration-backup/k8s-cluster/sealed-secrets-key.yaml"
+ss_sealing_key_dest: "/tmp/sealed-secrets-key.yaml"
+
+# Controller 가 인식할 sealing key label selector
+# (백업의 두 Secret 모두 sealedsecrets.bitnami.com/sealed-secrets-key=active 보유)
+ss_sealing_key_label: "sealedsecrets.bitnami.com/sealed-secrets-key=active"
+
+# ============================================================
+# Chart values
+# ============================================================
+# 백업 환경 운영 값 기반. 운영 중 별도 튜닝 없었으므로 거의 기본값.
+#
+# fullnameOverride 는 백업 환경에 맞춰 'sealed-secrets-controller' 로 강제.
+# (이 이름이 deployment / service / pod prefix 가 됨)
+#
+# resources 는 기본값 두고 운영 후 필요 시 조정.
+
+ss_chart_values:
+  fullnameOverride: "sealed-secrets-controller"
+  namespace: "{{ ss_namespace }}"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  # metrics (kube-prometheus-stack 이 추후 수집)
+  metrics:
+    serviceMonitor:
+      enabled: false   # ServiceMonitor CRD 가 아직 없으므로 false
+  # rbac.create / clusterRole 등은 chart 기본값 사용
+
+# ============================================================
+# Verify
+# ============================================================
+ss_controller_label_selector: "app.kubernetes.io/name=sealed-secrets"
+ss_wait_timeout: "180s"

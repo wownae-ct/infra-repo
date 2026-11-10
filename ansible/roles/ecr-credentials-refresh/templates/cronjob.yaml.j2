@@ -1,0 +1,73 @@
+# {{ ansible_managed }}
+# ECR credentials refresh CronJob.
+# 백업 환경 동작 + 개선점 (전용 SA, 고정 image tag).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ ecr_cronjob_name }}
+  namespace: {{ ecr_namespace }}
+  labels:
+    app.kubernetes.io/name: ecr-credentials-refresh
+    app.kubernetes.io/managed-by: ansible
+spec:
+  schedule: "{{ ecr_schedule }}"
+  concurrencyPolicy: Allow
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: {{ ecr_sa_name }}
+          restartPolicy: OnFailure
+          volumes:
+            - name: shared
+              emptyDir: {}
+          initContainers:
+            - name: get-ecr-token
+              image: {{ ecr_awscli_image }}
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - aws ecr get-login-password --region {{ ecr_region }} > /shared/ecr-token.txt
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ ecr_aws_creds_secret }}
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ ecr_aws_creds_secret }}
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ ecr_aws_creds_secret }}
+                      key: AWS_DEFAULT_REGION
+              volumeMounts:
+                - mountPath: /shared
+                  name: shared
+          containers:
+            - name: update-secret
+              image: {{ ecr_kubectl_image }}
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  kubectl create secret docker-registry {{ ecr_secret_name }} \
+                    --namespace={{ ecr_namespace }} \
+                    --docker-server={{ ecr_registry }} \
+                    --docker-username=AWS \
+                    --docker-password="$(cat /shared/ecr-token.txt)" \
+                    --dry-run=client -o yaml | kubectl apply -f -
+                  echo "ECR credentials refreshed at $(date)"
+              volumeMounts:
+                - mountPath: /shared
+                  name: shared

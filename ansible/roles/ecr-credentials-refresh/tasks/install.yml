@@ -1,0 +1,126 @@
+---
+# ============================================================
+# ecr/tasks/install.yml — sub-task 1
+# ============================================================
+# 대상: k8s-master-01
+# 순서:
+#   1. namespace 보장
+#   2. AWS credentials Secret (Vault → Secret)
+#   3. RBAC (ServiceAccount + Role + RoleBinding)
+#   4. CronJob (2-container 패턴)
+#   5. 초기 1회 즉시 실행 Job (CronJob 첫 schedule 안 기다림)
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. namespace 보장
+# ------------------------------------------------------------
+- name: "install | Ensure namespace {{ ecr_namespace }} exists"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ ecr_kubeconfig }} \
+      create namespace {{ ecr_namespace }} \
+      --dry-run=client -o yaml | \
+    kubectl --kubeconfig={{ ecr_kubeconfig }} apply -f -
+  args:
+    executable: /bin/bash
+  register: _ns_apply
+  changed_when: "'created' in _ns_apply.stdout"
+
+# ------------------------------------------------------------
+# 2. AWS credentials Secret (initContainer 의 env 소스)
+# ------------------------------------------------------------
+- name: "install | Render aws-credentials Secret manifest"
+  ansible.builtin.template:
+    src: aws-credentials-secret.yaml.j2
+    dest: /etc/kubernetes/ecr-aws-creds.yaml
+    owner: root
+    group: root
+    mode: '0600'
+    backup: true
+  no_log: true
+
+- name: "install | Apply aws-credentials Secret"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ecr_kubeconfig }}
+      apply -f /etc/kubernetes/ecr-aws-creds.yaml
+  register: _aws_creds_apply
+  changed_when: "'unchanged' not in _aws_creds_apply.stdout"
+  no_log: true
+
+# ------------------------------------------------------------
+# 3. RBAC (ServiceAccount + Role + RoleBinding)
+# ------------------------------------------------------------
+- name: "install | Render RBAC manifest"
+  ansible.builtin.template:
+    src: rbac.yaml.j2
+    dest: /etc/kubernetes/ecr-rbac.yaml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: "install | Apply RBAC"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ecr_kubeconfig }}
+      apply -f /etc/kubernetes/ecr-rbac.yaml
+  register: _rbac_apply
+  changed_when: "'unchanged' not in _rbac_apply.stdout"
+
+# ------------------------------------------------------------
+# 4. CronJob
+# ------------------------------------------------------------
+- name: "install | Render CronJob manifest"
+  ansible.builtin.template:
+    src: cronjob.yaml.j2
+    dest: /etc/kubernetes/ecr-cronjob.yaml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: "install | Apply CronJob"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ecr_kubeconfig }}
+      apply -f /etc/kubernetes/ecr-cronjob.yaml
+  register: _cronjob_apply
+  changed_when: "'unchanged' not in _cronjob_apply.stdout"
+
+# ------------------------------------------------------------
+# 5. 초기 1회 즉시 실행 Job (CronJob 첫 schedule 6h 안 기다림)
+# ------------------------------------------------------------
+- name: "install | Check if ecr-credentials Secret already exists"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ecr_kubeconfig }}
+      -n {{ ecr_namespace }}
+      get secret {{ ecr_secret_name }} -o name
+  register: _ecr_secret_check
+  changed_when: false
+  failed_when: false
+
+- name: "install | Trigger initial Job from CronJob (only if Secret missing)"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ ecr_kubeconfig }} -n {{ ecr_namespace }} \
+      delete job {{ ecr_initial_job_name }} --ignore-not-found
+    kubectl --kubeconfig={{ ecr_kubeconfig }} -n {{ ecr_namespace }} \
+      create job {{ ecr_initial_job_name }} \
+      --from=cronjob/{{ ecr_cronjob_name }}
+  args:
+    executable: /bin/bash
+  when:
+    - ecr_run_initial_job | bool
+    - _ecr_secret_check.rc != 0
+  register: _initial_job
+  changed_when: _initial_job.rc == 0
+
+- name: "install | Wait for initial Job to complete"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ecr_kubeconfig }}
+      -n {{ ecr_namespace }}
+      wait --for=condition=complete job/{{ ecr_initial_job_name }}
+      --timeout=120s
+  when:
+    - ecr_run_initial_job | bool
+    - _ecr_secret_check.rc != 0
+  changed_when: false

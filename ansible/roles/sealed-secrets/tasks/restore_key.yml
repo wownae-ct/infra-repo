@@ -1,0 +1,140 @@
+---
+# ============================================================
+# sealed-secrets/tasks/restore_key.yml — sub-task 1
+# ============================================================
+# 백업 sealing key 2개를 helm install 전에 미리 apply.
+# controller 가 기동될 때 active 라벨 Secret 을 발견 → 그걸 sealing key 로 사용.
+# 이 순서가 어긋나면 controller 는 새 키를 생성해버린다.
+#
+# 멱등성:
+#   - 이미 active sealing key 가 있으면 skip (개수만 확인).
+# ============================================================
+
+# ------------------------------------------------------------
+# 0. 사전 확인 — controller 가 인식할 키가 이미 있는지
+# ------------------------------------------------------------
+- name: "restore_key | Count existing sealing keys (active label)"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ss_kubeconfig }}
+      -n {{ ss_namespace }}
+      get secrets
+      -l {{ ss_sealing_key_label }}
+      --no-headers
+  register: _existing_keys
+  changed_when: false
+  failed_when: false
+
+- name: "restore_key | Decide if restore is needed"
+  ansible.builtin.set_fact:
+    _ss_restore_needed: "{{ (_existing_keys.stdout_lines | length) == 0 }}"
+
+- name: "restore_key | Skip — sealing keys already present"
+  ansible.builtin.debug:
+    msg: >-
+      Found {{ _existing_keys.stdout_lines | length }} existing sealing
+      key(s) — skipping restore.
+  when: not _ss_restore_needed
+
+# ------------------------------------------------------------
+# 1. 백업 키 파일 존재 확인 (control node 측)
+# ------------------------------------------------------------
+- name: "restore_key | Assert backup file exists on control node"
+  ansible.builtin.stat:
+    path: "{{ ss_sealing_key_src }}"
+  register: _src_stat
+  delegate_to: localhost
+  become: false
+  when: _ss_restore_needed
+
+- name: "restore_key | Fail if backup file missing"
+  ansible.builtin.assert:
+    that:
+      - _src_stat.stat.exists
+    fail_msg: >-
+      Backup sealing key file not found at {{ ss_sealing_key_src }}.
+      Was the migration-backup directory populated?
+    quiet: true
+  when: _ss_restore_needed
+
+# ------------------------------------------------------------
+# 2. 키 파일을 master-01 로 임시 복사 (control node → remote)
+# ------------------------------------------------------------
+- name: "restore_key | Copy sealing key file to {{ inventory_hostname }} (temp)"
+  ansible.builtin.copy:
+    src: "{{ ss_sealing_key_src }}"
+    dest: "{{ ss_sealing_key_dest }}"
+    owner: root
+    group: root
+    mode: '0600'
+  when: _ss_restore_needed
+
+# ------------------------------------------------------------
+# 3. namespace 보장 (kube-system 은 이미 있지만 일관성 차원에서)
+# ------------------------------------------------------------
+- name: "restore_key | Ensure namespace exists"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ss_kubeconfig }}
+      create namespace {{ ss_namespace }}
+      --dry-run=client -o yaml
+  register: _ns_dry
+  changed_when: false
+  when: _ss_restore_needed
+
+- name: "restore_key | Apply namespace"
+  ansible.builtin.command:
+    cmd: kubectl --kubeconfig={{ ss_kubeconfig }} apply -f -
+    stdin: "{{ _ns_dry.stdout }}"
+  when: _ss_restore_needed
+  register: _ns_apply
+  changed_when: "'created' in _ns_apply.stdout or 'configured' in _ns_apply.stdout"
+
+# ------------------------------------------------------------
+# 4. sealing key apply
+# ------------------------------------------------------------
+- name: "restore_key | Apply sealing key Secret(s)"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ss_kubeconfig }}
+      apply -f {{ ss_sealing_key_dest }}
+  register: _key_apply
+  changed_when: "'created' in _key_apply.stdout or 'configured' in _key_apply.stdout"
+  when: _ss_restore_needed
+
+- name: "restore_key | Show apply result"
+  ansible.builtin.debug:
+    msg: "{{ _key_apply.stdout_lines }}"
+  when:
+    - _ss_restore_needed
+    - _key_apply.stdout_lines is defined
+
+# ------------------------------------------------------------
+# 5. 임시 파일 즉시 삭제 (보안)
+# ------------------------------------------------------------
+- name: "restore_key | Remove temp sealing key file from {{ inventory_hostname }}"
+  ansible.builtin.file:
+    path: "{{ ss_sealing_key_dest }}"
+    state: absent
+  when: _ss_restore_needed
+
+# ------------------------------------------------------------
+# 6. 사후 검증 — 키가 실제로 박혔는지
+# ------------------------------------------------------------
+- name: "restore_key | Verify | sealing keys present in {{ ss_namespace }}"
+  ansible.builtin.command:
+    cmd: >
+      kubectl --kubeconfig={{ ss_kubeconfig }}
+      -n {{ ss_namespace }}
+      get secrets
+      -l {{ ss_sealing_key_label }}
+      --no-headers
+  register: _v_keys
+  changed_when: false
+  failed_when: (_v_keys.stdout_lines | length) < 1
+
+- name: "restore_key | Report sealing keys"
+  ansible.builtin.debug:
+    msg: >-
+      Sealing keys in {{ ss_namespace }} ({{ _v_keys.stdout_lines | length }}):
+      {{ _v_keys.stdout_lines | map('regex_replace', '\s.*$', '') | list | join(', ') }}

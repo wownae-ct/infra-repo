@@ -1,0 +1,76 @@
+---
+# ============================================================
+# bastion_iptables - tasks
+# ============================================================
+
+# ---------- 패키지 ----------
+- name: Install iptables-persistent (silent)
+  ansible.builtin.apt:
+    name:
+      - iptables
+      - iptables-persistent
+      - netfilter-persistent
+    state: present
+  become: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  tags: [bastion, iptables, packages]
+
+# ---------- IP forwarding ----------
+- name: Enable IPv4 forwarding (runtime)
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-bastion-forward.conf
+    reload: true
+  become: true
+  when: bastion_iptables_ip_forward | bool
+  tags: [bastion, iptables, sysctl]
+
+# ---------- 룰 파일 렌더링 + 적용 ----------
+- name: iptables | 룰 파일 렌더링 (/etc/iptables/rules.v4)
+  ansible.builtin.template:
+    src: iptables.rules.j2
+    dest: /etc/iptables/rules.v4
+    owner: root
+    group: root
+    mode: '0640'
+  become: true
+  notify: restore iptables rules
+  tags: [bastion, iptables]
+
+- name: iptables | 즉시 적용
+  ansible.builtin.shell: iptables-restore < /etc/iptables/rules.v4
+  become: true
+  changed_when: false
+  tags: [bastion, iptables]
+
+# ---------- 검증 ----------
+- name: Verify | IP forwarding enabled
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  register: ipfwd_check
+  changed_when: false
+  failed_when: ipfwd_check.stdout != "1"
+  tags: [bastion, iptables, verify]
+
+- name: Verify | NAT MASQUERADE rule exists
+  ansible.builtin.shell: |
+    iptables -t nat -L POSTROUTING -n | grep -q "MASQUERADE"
+  become: true
+  register: nat_check
+  changed_when: false
+  failed_when: nat_check.rc != 0
+  tags: [bastion, iptables, verify]
+
+- name: Verify | iptables 현재 상태 출력
+  ansible.builtin.shell: iptables -nL --line-numbers
+  become: true
+  register: iptables_status
+  changed_when: false
+  tags: [bastion, iptables, verify]
+
+- name: Verify | 결과
+  ansible.builtin.debug:
+    msg: "{{ iptables_status.stdout_lines }}"
+  tags: [bastion, iptables, verify]

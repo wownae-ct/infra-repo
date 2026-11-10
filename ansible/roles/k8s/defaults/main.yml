@@ -1,0 +1,176 @@
+---
+# ============================================================
+# k8s role - defaults
+# ============================================================
+# k8s 클러스터 (3 master + 3 worker, HA) 전체 변수.
+#
+# 환경: Ubuntu 22.04 LTS (Hyper-V VM)
+#   - masters: 2 vCPU / 3.8GB RAM / sda 40G root
+#   - workers: 4 vCPU / 15GB RAM / 40G root + 30G Longhorn (디스크 매핑 노드별 host_vars)
+#
+# 백업 (Proxmox) 환경 1.29 → 1.35 업그레이드 경로 단축:
+#   - kubeadm 1.34.8 직접 설치 (옵션 B)
+#   - 컴포넌트들은 1.35에서 잘 동작했으니 1.34에서도 OK
+#
+# NIC: eth0 (Hyper-V Ubuntu 22 기본, 백업의 ens18 아님)
+# SSH: 22 유지 (백업 환경 그대로). UFW 미적용 (cilium 자체 networkpolicy)
+# ============================================================
+
+
+# ============================================================
+# Kubernetes 버전
+# ============================================================
+# 백업 운영 환경: v1.35.4 (1.29 → 단계 업그레이드)
+# 신환경: 1.34.8 직접 설치 (안정성, EOL 2026-10-27)
+
+k8s_version: "1.34.8-1.1"               # apt 패키지 버전
+k8s_version_short: "v1.34.8"            # kubeadm upgrade plan 등에서 사용
+k8s_version_minor: "v1.34"              # apt repo URL
+k8s_apt_keyring_path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+k8s_apt_repo_key_url: "https://pkgs.k8s.io/core:/stable:/{{ k8s_version_minor }}/deb/Release.key"
+k8s_apt_repo_url: "https://pkgs.k8s.io/core:/stable:/{{ k8s_version_minor }}/deb/ /"
+
+
+# ============================================================
+# 패키지
+# ============================================================
+
+k8s_common_packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - socat                                # kubeadm 의존성
+  - conntrack                            # kube-proxy/cilium 의존성
+  - ebtables
+  - ipset
+
+# containerd: Ubuntu 22 기본 apt 패키지 (자동으로 2.x). 별도 repo 추가 안 함.
+k8s_containerd_packages:
+  - containerd
+  - runc
+
+# kubelet/kubeadm/kubectl: apt에서 버전 고정 (hold)
+k8s_kube_packages:
+  - "kubelet={{ k8s_version }}"
+  - "kubeadm={{ k8s_version }}"
+  - "kubectl={{ k8s_version }}"
+
+k8s_kube_packages_names:
+  - kubelet
+  - kubeadm
+  - kubectl
+
+
+# ============================================================
+# Containerd
+# ============================================================
+# config.toml 핵심: SystemdCgroup = true
+
+k8s_containerd_config_path: /etc/containerd/config.toml
+k8s_containerd_systemd_cgroup: true
+k8s_containerd_sandbox_image: "registry.k8s.io/pause:3.10"
+
+
+# ============================================================
+# sysctl / kernel modules
+# ============================================================
+# 백업 sysctl.d/k8s.conf + modules-load.d/k8s.conf + 99-zzz-override_cilium.conf
+
+k8s_kernel_modules:
+  - overlay
+  - br_netfilter
+
+# k8s 표준 sysctl
+k8s_sysctl_params:
+  net.bridge.bridge-nf-call-iptables: 1
+  net.bridge.bridge-nf-call-ip6tables: 1
+  net.ipv4.ip_forward: 1
+  # IPv6 비활성화 (IPv4-only 환경)
+  net.ipv6.conf.all.disable_ipv6: 1
+  net.ipv6.conf.default.disable_ipv6: 1
+  net.ipv6.conf.lo.disable_ipv6: 1
+
+# Cilium override sysctl (백업 99-zzz-override_cilium.conf)
+# rp_filter 0 필수 (mangled packets drop 방지)
+k8s_sysctl_cilium_params:
+  net.ipv4.conf.all.rp_filter: 0
+
+
+# ============================================================
+# Control Plane HA (keepalived + haproxy)
+# ============================================================
+# 백업 keepalived.conf / haproxy.cfg 기반.
+
+k8s_vip: "10.98.1.240"
+k8s_vip_interface: eth0
+
+k8s_haproxy_frontend_port: 8443         # controlPlaneEndpoint port
+k8s_haproxy_stats_port: 9000
+
+k8s_keepalived_virtual_router_id: 51
+k8s_keepalived_advert_int: 1
+
+# 비밀번호 (vault)
+k8s_keepalived_auth_pass: "{{ vault_k8s_keepalived_auth_pass }}"
+k8s_haproxy_stats_user: admin
+k8s_haproxy_stats_pass: "{{ vault_k8s_haproxy_stats_pass }}"
+
+
+# ============================================================
+# kubeadm init / join
+# ============================================================
+# master-01에서 init, master-02/03 + workers join.
+
+k8s_cluster_name: jiong-k8s
+
+# controlPlaneEndpoint = VIP:8443 (HAProxy frontend)
+k8s_control_plane_endpoint: "{{ k8s_vip }}:{{ k8s_haproxy_frontend_port }}"
+
+# Networking
+# Pod CIDR: /20 = 4096 IPs, cilium cluster-pool 노드당 /24면 16 노드 분량 (현재 6 노드)
+# Service CIDR: k8s 기본
+k8s_pod_subnet: "10.244.0.0/20"
+k8s_service_subnet: "10.96.0.0/12"
+k8s_cluster_dns: "10.96.0.10"
+
+# kube-proxy 비활성화 (Cilium 가 대체)
+k8s_skip_phases_init:
+  - addon/kube-proxy
+
+
+# ============================================================
+# Cilium
+# ============================================================
+# Helm chart 로 설치. kube-proxy 대체 (kubeProxyReplacement=true).
+# 백업과 동일: k8sServiceHost=VIP, k8sServicePort=8443
+
+k8s_cilium_version: "1.19.1"
+k8s_cilium_helm_repo: "https://helm.cilium.io/"
+k8s_cilium_namespace: kube-system
+
+# Cilium values (helm install --values 또는 --set)
+k8s_cilium_values:
+  kubeProxyReplacement: true
+  k8sServiceHost: "{{ k8s_vip }}"
+  k8sServicePort: "{{ k8s_haproxy_frontend_port }}"
+  ipam:
+    mode: cluster-pool
+    operator:
+      clusterPoolIPv4PodCIDRList:
+        - "{{ k8s_pod_subnet }}"
+  hubble:
+    enabled: true
+    relay:
+      enabled: true
+    ui:
+      enabled: true
+
+# ============================================================
+# Helm binary
+# ============================================================
+# GitHub release 에서 직접 다운로드 (baltocdn apt 의존성 회피)
+# checksum 은 https://github.com/helm/helm/releases 의 release notes 참고
+
+k8s_helm_version: "v3.16.3"
+k8s_helm_sha256: "sha256:f5355c79190951eed23c5432a3b920e071f4c00a64f75e077de0dd4cb7b294ea"

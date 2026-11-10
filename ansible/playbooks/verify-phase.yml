@@ -1,0 +1,588 @@
+---
+# 18차 E2E 사전 검증 플레이북
+# 실행: ansible-playbook -i inventories/hyperv/hosts.ini playbooks/verify-phase3.yml --ask-vault-pass
+
+###############################################################################
+# PLAY 1 — bastion: DNS / NTP / WireGuard / OpenVPN / Nginx / knockd
+###############################################################################
+- name: "PLAY 1 | bastion 서비스 검증"
+  hosts: bastion
+  gather_facts: false
+
+  tasks:
+    - name: "DNS | bind9 서비스 상태"
+      ansible.builtin.command: systemctl is-active named
+      register: r_bind
+      changed_when: false
+      ignore_errors: true
+
+    - name: "DNS | 내부 zone (lab.internal) — 9대 A레코드 조회"
+      ansible.builtin.command: nslookup {{ item }} 127.0.0.1
+      loop:
+        - bastion
+        - storage
+        - db
+        - k8s-master-01
+        - k8s-master-02
+        - k8s-master-03
+        - k8s-worker-01
+        - k8s-worker-02
+        - k8s-worker-03
+      register: r_dns_internal
+      changed_when: false
+      ignore_errors: true
+
+    - name: "DNS | 내부 zone 결과"
+      ansible.builtin.debug:
+        msg: "{{ item.item }} : {{ (item.rc == 0) | ternary('✅ OK', '❌ NXDOMAIN') }} {{ item.stdout_lines | last | default('') }}"
+      loop: "{{ r_dns_internal.results }}"
+
+    - name: "DNS | 외부 zone (example.ddns.net) — 서비스 레코드 조회"
+      ansible.builtin.command: nslookup {{ item }} 127.0.0.1
+      loop:
+        - example.ddns.net
+        - s3.example.ddns.net
+      register: r_dns_external
+      changed_when: false
+      ignore_errors: true
+
+    - name: "DNS | 외부 zone 결과"
+      ansible.builtin.debug:
+        msg: "{{ item.item }} : {{ (item.rc == 0) | ternary('✅ OK', '❌ FAIL') }} {{ item.stdout_lines | last | default('') }}"
+      loop: "{{ r_dns_external.results }}"
+
+    - name: "NTP | chronyc sources"
+      ansible.builtin.command: chronyc sources -v
+      register: r_ntp
+      changed_when: false
+
+    - name: "NTP | 동기화 peers"
+      ansible.builtin.debug:
+        msg: "{{ r_ntp.stdout_lines | select('match', '^[\\^*?#-]') | list }}"
+
+    - name: "NTP | clients (내부 서버들 접속 확인)"
+      ansible.builtin.command: chronyc clients
+      register: r_ntp_clients
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: "NTP | clients 결과"
+      ansible.builtin.debug:
+        msg: "{{ r_ntp_clients.stdout_lines | default(['❌ 조회 실패']) }}"
+
+    - name: "WireGuard | wg show"
+      ansible.builtin.command: wg show
+      register: r_wg
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: "WireGuard | EC2 peer ping (10.99.1.1)"
+      ansible.builtin.command: ping -c 3 -W 2 10.99.1.1
+      register: r_wg_ping
+      changed_when: false
+      ignore_errors: true
+
+    - name: "WireGuard | ping 결과"
+      ansible.builtin.debug:
+        msg: "WireGuard EC2 ping : {{ (r_wg_ping.rc == 0) | ternary('✅ OK', '❌ FAIL (EC2 peer 전이면 정상)') }}"
+
+    - name: "OpenVPN | 서비스 상태"
+      ansible.builtin.command: systemctl is-active openvpn@server
+      register: r_ovpn
+      changed_when: false
+      ignore_errors: true
+
+    - name: "OpenVPN | tun 인터페이스 확인"
+      ansible.builtin.command: ip addr show tun0
+      register: r_ovpn_tun
+      changed_when: false
+      ignore_errors: true
+
+    - name: "OpenVPN | 결과"
+      ansible.builtin.debug:
+        msg:
+          - "서비스 : {{ (r_ovpn.stdout == 'active') | ternary('✅ active', '❌ ' + r_ovpn.stdout | default('inactive')) }}"
+          - "tun0   : {{ (r_ovpn_tun.rc == 0) | ternary('✅ UP', '❌ 없음') }}"
+
+    - name: "Nginx | 서비스 상태"
+      ansible.builtin.command: systemctl is-active nginx
+      register: r_nginx
+      changed_when: false
+      ignore_errors: true
+
+    - name: "Nginx | config 문법 검사"
+      ansible.builtin.command: nginx -t
+      register: r_nginx_test
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: "Nginx | 결과"
+      ansible.builtin.debug:
+        msg:
+          - "서비스 : {{ (r_nginx.stdout == 'active') | ternary('✅ active', '❌ ' + r_nginx.stdout | default('inactive')) }}"
+          - "config : {{ (r_nginx_test.rc == 0) | ternary('✅ OK', '❌ syntax error') }}"
+
+    - name: "knockd | 서비스 상태"
+      ansible.builtin.command: systemctl is-active knockd
+      register: r_knockd
+      changed_when: false
+      ignore_errors: true
+
+    - name: "knockd | 결과"
+      ansible.builtin.debug:
+        msg: "knockd : {{ (r_knockd.stdout == 'active') | ternary('✅ active', '❌ ' + r_knockd.stdout | default('inactive')) }}"
+
+    - name: "PLAY 1 | 요약"
+      ansible.builtin.debug:
+        msg:
+          - "=== bastion 요약 ==="
+          - "bind9    : {{ (r_bind.stdout == 'active') | ternary('✅', '❌') }}"
+          - "NTP      : {{ (r_ntp.stdout | regex_search('\\^\\*')) is not none | ternary('✅', '❌') }}"
+          - "WireGuard: {{ (r_wg_ping.rc == 0) | ternary('✅', '❌ (EC2 peer 전이면 정상)') }}"
+          - "OpenVPN  : {{ (r_ovpn.stdout == 'active') | ternary('✅', '❌') }}"
+          - "Nginx    : {{ (r_nginx.stdout == 'active') | ternary('✅', '❌') }}"
+          - "knockd   : {{ (r_knockd.stdout == 'active') | ternary('✅', '❌') }}"
+
+
+###############################################################################
+# PLAY 2 — storage: NFS / SMB / MinIO / NTP
+###############################################################################
+- name: "PLAY 2 | storage 서비스 검증"
+  hosts: storage
+  gather_facts: false
+
+  tasks:
+    - name: "NTP | chronyc tracking"
+      ansible.builtin.command: chronyc tracking
+      register: r_ntp
+      changed_when: false
+      ignore_errors: true
+
+    - name: "NTP | bastion NTP 서버 사용 확인"
+      ansible.builtin.shell: chronyc sources | grep -E '20\.20\.20\.230|bastion|_gateway'
+      register: r_ntp_src
+      changed_when: false
+      ignore_errors: true
+
+    - name: "NTP | 결과"
+      ansible.builtin.debug:
+        msg:
+          - "{{ r_ntp.stdout_lines | default(['❌ chronyc 실패']) }}"
+          - "bastion NTP : {{ (r_ntp_src.rc == 0) | ternary('✅ 사용 중', '❌ 미사용') }}"
+
+    - name: "NFS | nfs-server 서비스 상태"
+      ansible.builtin.command: systemctl is-active nfs-server
+      register: r_nfs
+      changed_when: false
+      ignore_errors: true
+
+    - name: "NFS | exports 목록"
+      ansible.builtin.command: exportfs -v
+      register: r_exports
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: "NFS | 결과"
+      ansible.builtin.debug:
+        msg:
+          - "nfs-server : {{ (r_nfs.stdout == 'active') | ternary('✅ active', '❌ ' + r_nfs.stdout | default('')) }}"
+          - "exports    : {{ r_exports.stdout_lines | default(['없음']) }}"
+
+    - name: "SMB | smbd 서비스 상태"
+      ansible.builtin.command: systemctl is-active smb
+      register: r_smb
+      changed_when: false
+      ignore_errors: true
+
+    - name: "SMB | share 목록"
+      ansible.builtin.command: smbstatus --shares
+      register: r_smb_shares
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: "SMB | laputa 계정 접속 테스트"
+      ansible.builtin.shell: >
+        smbclient //localhost/laputa
+        -U laputa%{{ vault_storage_smb_laputa_password }}
+        -c "ls" 2>&1 | head -5
+      register: r_smb_laputa
+      changed_when: false
+      ignore_errors: true
+      no_log: true
+
+    - name: "SMB | totoro 계정 접속 테스트"
+      ansible.builtin.shell: >
+        smbclient //localhost/totoro
+        -U totoro%{{ vault_storage_smb_totoro_password }}
+        -c "ls" 2>&1 | head -5
+      register: r_smb_totoro
+      changed_when: false
+      ignore_errors: true
+      no_log: true
+
+    - name: "SMB | 결과"
+      ansible.builtin.debug:
+        msg:
+          - "smbd   : {{ (r_smb.stdout == 'active') | ternary('✅ active', '❌ ' + r_smb.stdout | default('')) }}"
+          - "laputa : {{ (r_smb_laputa.rc == 0) | ternary('✅ 접속 OK', '❌ 접속 실패') }}"
+          - "totoro : {{ (r_smb_totoro.rc == 0) | ternary('✅ 접속 OK', '❌ 접속 실패') }}"
+
+    - name: "MinIO | 서비스 상태"
+      ansible.builtin.command: systemctl is-active minio
+      register: r_minio_svc
+      changed_when: false
+      ignore_errors: true
+
+    - name: "MinIO | health/live 엔드포인트"
+      ansible.builtin.uri:
+        url: "http://localhost:9000/minio/health/live"
+        timeout: 5
+        status_code: 200
+      register: r_minio_health
+      ignore_errors: true
+
+    - name: "MinIO | 결과"
+      ansible.builtin.debug:
+        msg:
+          - "서비스 : {{ (r_minio_svc.stdout == 'active') | ternary('✅ active', '❌ ' + r_minio_svc.stdout | default('')) }}"
+          - "health : {{ (r_minio_health.status | default(0) == 200) | ternary('✅ 200 OK', '❌ ' + (r_minio_health.status | default('ERR') | string)) }}"
+
+    - name: "PLAY 2 | 요약"
+      ansible.builtin.debug:
+        msg:
+          - "=== storage 요약 ==="
+          - "NTP    : {{ (r_ntp_src.rc == 0) | ternary('✅ bastion 동기화 중', '❌ bastion NTP 미사용') }}"
+          - "NFS    : {{ (r_nfs.stdout == 'active') | ternary('✅', '❌') }}"
+          - "SMB    : {{ (r_smb.stdout == 'active') | ternary('✅', '❌') }}"
+          - "laputa : {{ (r_smb_laputa.rc == 0) | ternary('✅', '❌') }}"
+          - "totoro : {{ (r_smb_totoro.rc == 0) | ternary('✅', '❌') }}"
+          - "MinIO  : {{ (r_minio_health.status | default(0) == 200) | ternary('✅', '❌') }}"
+
+
+###############################################################################
+# PLAY 3 — db: MariaDB / UFW / NTP
+###############################################################################
+- name: "PLAY 3 | db 서비스 검증"
+  hosts: db
+  gather_facts: false
+
+  tasks:
+    - name: "NTP | chronyc tracking"
+      ansible.builtin.command: chronyc tracking
+      register: r_ntp
+      changed_when: false
+      ignore_errors: true
+
+    - name: "NTP | bastion NTP 서버 사용 확인"
+      ansible.builtin.shell: chronyc sources | grep -E '20\.20\.20\.230|bastion|_gateway'
+      register: r_ntp_src
+      changed_when: false
+      ignore_errors: true
+
+    - name: "NTP | 결과"
+      ansible.builtin.debug:
+        msg:
+          - "{{ r_ntp.stdout_lines | default(['❌ chronyc 실패']) }}"
+          - "bastion NTP : {{ (r_ntp_src.rc == 0) | ternary('✅ 사용 중', '❌ 미사용') }}"
+
+    - name: "MariaDB | 서비스 상태"
+      ansible.builtin.command: systemctl is-active mariadb
+      register: r_mariadb_svc
+      changed_when: false
+      ignore_errors: true
+
+    - name: "MariaDB | SELECT 1 (root 소켓 접속)"
+      ansible.builtin.command: mysql -u root -e "SELECT 1"
+      register: r_mariadb_query
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: "MariaDB | DB 목록"
+      ansible.builtin.command: mysql -u root -e "SHOW DATABASES"
+      register: r_mariadb_dbs
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: "MariaDB | 결과"
+      ansible.builtin.debug:
+        msg:
+          - "서비스  : {{ (r_mariadb_svc.stdout == 'active') | ternary('✅ active', '❌ ' + r_mariadb_svc.stdout | default('')) }}"
+          - "SELECT 1: {{ (r_mariadb_query.rc == 0) | ternary('✅ OK', '❌ FAIL') }}"
+          - "DBs     : {{ r_mariadb_dbs.stdout_lines | default(['❌ 조회 실패']) }}"
+
+    - name: "UFW | 방화벽 상태"
+      ansible.builtin.command: ufw status numbered
+      register: r_ufw
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: "UFW | 결과"
+      ansible.builtin.debug:
+        msg: "{{ r_ufw.stdout_lines | default(['❌ ufw 조회 실패']) }}"
+
+    - name: "PLAY 3 | 요약"
+      ansible.builtin.debug:
+        msg:
+          - "=== db 요약 ==="
+          - "NTP     : {{ (r_ntp_src.rc == 0) | ternary('✅ bastion 동기화 중', '❌ bastion NTP 미사용') }}"
+          - "MariaDB : {{ (r_mariadb_query.rc == 0) | ternary('✅', '❌') }}"
+          - "UFW     : {{ ('Status: active' in r_ufw.stdout | default('')) | ternary('✅', '❌') }}"
+
+
+###############################################################################
+# PLAY 4 — k8s: 클러스터 + 컴포넌트 + 서비스 접근
+###############################################################################
+- name: "PLAY 4 | K8s 클러스터 검증 (k8s-master-01)"
+  hosts: k8s-master-01
+  gather_facts: false
+
+  tasks:
+    - name: "Nodes | kubectl get nodes"
+      ansible.builtin.command: kubectl get nodes -o wide
+      register: r_nodes
+      changed_when: false
+
+    - name: "Nodes | 출력"
+      ansible.builtin.debug:
+        msg: "{{ r_nodes.stdout_lines }}"
+
+    - name: "Nodes | NotReady 없음 확인"
+      ansible.builtin.assert:
+        that: "'NotReady' not in r_nodes.stdout"
+        fail_msg: "❌ NotReady 노드 존재"
+        success_msg: "✅ 전체 노드 Ready"
+
+    - name: "Pods | 비정상 파드"
+      ansible.builtin.shell: |
+        kubectl get pods -A --no-headers \
+          | grep -v -E '\s(Running|Completed|Succeeded)\s' || true
+      register: r_pods_bad
+      changed_when: false
+
+    - name: "Pods | 결과"
+      ansible.builtin.debug:
+        msg: "{{ r_pods_bad.stdout_lines if r_pods_bad.stdout else ['✅ 전부 Running/Completed'] }}"
+
+    - name: "Cilium | 파드 상태"
+      ansible.builtin.shell: |
+        kubectl -n kube-system get pods -l k8s-app=cilium --no-headers \
+          | awk '{print $1, $3}'
+      register: r_cilium
+      changed_when: false
+      ignore_errors: true
+
+    - name: "Cilium | 결과"
+      ansible.builtin.debug:
+        msg: "{{ r_cilium.stdout_lines | default(['❌ cilium 조회 실패']) }}"
+
+    - name: "Longhorn | 볼륨 상태"
+      ansible.builtin.command: >
+        kubectl get volumes.longhorn.io -n longhorn-system
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.state}{"\n"}{end}'
+      register: r_longhorn
+      changed_when: false
+      ignore_errors: true
+
+    - name: "Longhorn | 결과"
+      ansible.builtin.debug:
+        msg: "{{ r_longhorn.stdout_lines | default(['❌ 조회 실패']) }}"
+
+    - name: "Longhorn | degraded 없음 확인"
+      ansible.builtin.assert:
+        that: "'degraded' not in r_longhorn.stdout"
+        fail_msg: "❌ degraded 볼륨 존재"
+        success_msg: "✅ 전체 볼륨 healthy"
+      ignore_errors: true
+
+    - name: "ArgoCD | 앱 상태"
+      ansible.builtin.command: >
+        kubectl get applications -n argocd
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\t sync="}{.status.sync.status}{"\t health="}{.status.health.status}{"\n"}{end}'
+      register: r_argocd
+      changed_when: false
+      ignore_errors: true
+
+    - name: "ArgoCD | 결과"
+      ansible.builtin.debug:
+        msg: "{{ r_argocd.stdout_lines | default(['❌ 조회 실패']) }}"
+
+    - name: "ArgoCD | OutOfSync / Degraded 없음 확인"
+      ansible.builtin.assert:
+        that:
+          - "'OutOfSync' not in r_argocd.stdout"
+          - "'Degraded' not in r_argocd.stdout"
+        fail_msg: "❌ OutOfSync 또는 Degraded 앱 존재"
+        success_msg: "✅ 모든 앱 Synced/Healthy"
+      ignore_errors: true
+
+    - name: "etcd | metrics 엔드포인트"
+      ansible.builtin.shell: |
+        curl -sk \
+          --cert /etc/kubernetes/pki/etcd/peer.crt \
+          --key  /etc/kubernetes/pki/etcd/peer.key \
+          --cacert /etc/kubernetes/pki/etcd/ca.crt \
+          https://127.0.0.1:2381/metrics | head -3
+      register: r_etcd
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: "etcd | 결과"
+      ansible.builtin.debug:
+        msg: "{{ r_etcd.stdout_lines | default(['❌ etcd metrics 실패']) }}"
+
+    - name: "서비스 | 내부 도메인 7개 HTTP 응답 확인"
+      ansible.builtin.uri:
+        url: "{{ item.url }}"
+        validate_certs: false
+        timeout: 5
+        status_code: [200, 301, 302, 401, 403]
+      loop:
+        - { name: jenkins,      url: "http://jenkins.lab.internal/login" }
+        - { name: grafana,      url: "http://grafana.lab.internal/api/health" }
+        - { name: argocd,       url: "http://argocd.lab.internal" }
+        - { name: longhorn,     url: "http://longhorn.lab.internal" }
+        - { name: kiali,        url: "http://kiali.lab.internal" }
+        - { name: prometheus,   url: "http://prometheus.lab.internal/-/healthy" }
+        - { name: alertmanager, url: "http://alertmanager.lab.internal/-/healthy" }
+      register: r_services
+      ignore_errors: true
+
+    - name: "서비스 | 결과"
+      ansible.builtin.debug:
+        msg: >
+          {{ item.item.name }} :
+          {{ item.status is defined | ternary(
+              item.status | string + ' ' + ((item.status in [200,301,302,401,403]) | ternary('✅','❌')),
+              '❌ TIMEOUT/ERR'
+          ) }}
+      loop: "{{ r_services.results }}"
+
+    - name: "Jenkins | credentials 4개 확인"
+      ansible.builtin.shell: |
+        PASS=$(kubectl -n jenkins get secret jenkins-credentials \
+          -o jsonpath="{.data.jenkins-admin-password}" | base64 -d)
+        USER=$(kubectl -n jenkins get secret jenkins-credentials \
+          -o jsonpath="{.data.jenkins-admin-user}" | base64 -d)
+        curl -s -u $USER:$PASS \
+          "http://jenkins.lab.internal/credentials/store/system/domain/_/api/json?depth=2" \
+          | python3 -c "
+        import sys, json
+        creds = json.load(sys.stdin).get('credentials', [])
+        for c in creds:
+            print(c.get('id','?'), '|', c.get('typeName','?'))
+        "
+      args:
+        executable: /bin/bash
+      register: r_jenkins_creds
+      changed_when: false
+      ignore_errors: true
+      no_log: true
+
+    - name: "Jenkins | credentials 목록"
+      ansible.builtin.debug:
+        msg: "{{ r_jenkins_creds.stdout_lines | default(['❌ 조회 실패']) }}"
+
+    - name: "Jenkins | portfolio-web job 존재 확인"
+      ansible.builtin.shell: |
+        PASS=$(kubectl -n jenkins get secret jenkins-credentials \
+          -o jsonpath="{.data.jenkins-admin-password}" | base64 -d)
+        USER=$(kubectl -n jenkins get secret jenkins-credentials \
+          -o jsonpath="{.data.jenkins-admin-user}" | base64 -d)
+        curl -s -o /dev/null -w "%{http_code}" -u $USER:$PASS \
+          http://jenkins.lab.internal/job/portfolio-web/api/json
+      args:
+        executable: /bin/bash
+      register: r_jenkins_job
+      changed_when: false
+      ignore_errors: true
+      no_log: true
+
+    - name: "Jenkins | job 결과"
+      ansible.builtin.debug:
+        msg: "portfolio-web job : {{ (r_jenkins_job.stdout == '200') | ternary('✅ 존재', '❌ 없음 (' + r_jenkins_job.stdout | default('ERR') + ')') }}"
+
+    - name: "모니터링 | Prometheus targets"
+      ansible.builtin.uri:
+        url: "http://prometheus.lab.internal/api/v1/targets"
+        validate_certs: false
+        timeout: 10
+        status_code: 200
+      register: r_prom
+      ignore_errors: true
+
+    - name: "모니터링 | down targets"
+      ansible.builtin.set_fact:
+        prom_down: >-
+          {{ r_prom.json.data.activeTargets
+             | default([])
+             | selectattr('health', 'equalto', 'down')
+             | map(attribute='labels.job') | list }}
+      when: r_prom.status is defined and r_prom.status == 200
+
+    - name: "모니터링 | Prometheus 결과"
+      ansible.builtin.debug:
+        msg: "down targets : {{ ((prom_down | default([])) | length == 0) | ternary('✅ 없음', '❌ ' + (prom_down | default([]) | join(', '))) }}"
+
+    - name: "모니터링 | Grafana 대시보드 수"
+      ansible.builtin.uri:
+        url: "http://grafana.lab.internal/api/search?type=dash-db"
+        validate_certs: false
+        timeout: 5
+        url_username: "admin"
+        url_password: "{{ vault_grafana_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: r_grafana_dash
+      ignore_errors: true
+
+    - name: "모니터링 | Grafana 대시보드 목록"
+      ansible.builtin.debug:
+        msg: "대시보드 {{ r_grafana_dash.json | default([]) | length }}개 : {{ r_grafana_dash.json | default([]) | map(attribute='title') | list }}"
+
+    - name: "모니터링 | Loki ready"
+      ansible.builtin.uri:
+        url: "http://loki.lab.internal/ready"
+        validate_certs: false
+        timeout: 5
+        status_code: 200
+      register: r_loki
+      ignore_errors: true
+
+    - name: "모니터링 | Loki 결과"
+      ansible.builtin.debug:
+        msg: "Loki : {{ (r_loki.status | default(0) == 200) | ternary('✅ OK', '❌ FAIL') }}"
+
+    - name: "SKIP | 데이터 이관 전 / 수동 확인 항목"
+      ansible.builtin.debug:
+        msg:
+          - "⏭  portfolio-web /health  — 데이터 이관 후 확인"
+          - "⏭  portfolio-web /metrics — 데이터 이관 후 확인"
+          - "⏭  Jenkins E2E 빌드 트리거 — 데이터 이관 후 확인"
+          - "⏭  AlertManager → SNS → Discord 테스트 알림 — 수동 실행 필요"
+          - "⏭  GitHub Webhook 재등록 — 수동 확인 필요"
+          - "⏭  OpenVPN 연결 → SMB 접근 — 수동 확인 필요"
+          - "⏭  포트노킹 knock → SSH — 수동 확인 필요"
+          - "⏭  WireGuard — 19차 컷오버 시 작업"
+
+    - name: "PLAY 4 | 요약"
+      ansible.builtin.debug:
+        msg:
+          - "=== K8s 요약 ==="
+          - "Nodes     : {{ ('NotReady' not in r_nodes.stdout) | ternary('✅ 6대 Ready', '❌ NotReady 존재') }}"
+          - "Pods      : {{ (r_pods_bad.stdout == '') | ternary('✅ 전부 정상', '❌ 비정상 파드 존재') }}"
+          - "Longhorn  : {{ ('degraded' not in r_longhorn.stdout | default('')) | ternary('✅', '❌') }}"
+          - "ArgoCD    : {{ ('OutOfSync' not in r_argocd.stdout | default('') and 'Degraded' not in r_argocd.stdout | default('')) | ternary('✅ 전체 Synced', '❌ 문제 앱 존재') }}"
+          - "etcd      : {{ (r_etcd.rc | default(1) == 0) | ternary('✅', '❌') }}"
+          - "Prometheus: {{ ((prom_down | default([])) | length == 0) | ternary('✅ targets 전부 UP', '❌ down 존재') }}"
+          - "Grafana   : {{ (r_grafana_dash.json | default([]) | length > 0) | ternary('✅ 대시보드 ' + (r_grafana_dash.json | default([]) | length | string) + '개', '❌') }}"
+          - "Loki      : {{ (r_loki.status | default(0) == 200) | ternary('✅', '❌') }}"
+          - "Jenkins   : {{ (r_jenkins_job.stdout == '200') | ternary('✅ credentials + job OK', '❌') }}"

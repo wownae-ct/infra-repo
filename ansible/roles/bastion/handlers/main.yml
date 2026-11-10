@@ -1,0 +1,105 @@
+---
+# ============================================================
+# bastion role - handlers
+# ============================================================
+# 여러 sub-task 가 공유하는 핸들러 모음.
+# task 에서 notify 로 호출.
+# ============================================================
+
+# ---------- iptables ----------
+
+- name: save iptables rules
+  ansible.builtin.shell: netfilter-persistent save
+  become: true
+  when: not ansible_check_mode
+
+# ---------- SSH ----------
+
+- name: restart sshd
+  ansible.builtin.systemd:
+    name: ssh
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+# ---------- BIND9 ----------
+
+- name: reload bind9
+  ansible.builtin.systemd:
+    name: named
+    state: reloaded
+  become: true
+  when: not ansible_check_mode
+
+- name: restart bind9
+  ansible.builtin.systemd:
+    name: named
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+- name: restart systemd-resolved
+  ansible.builtin.systemd:
+    name: systemd-resolved
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+# ---------- Chrony ----------
+
+- name: restart chronyd
+  ansible.builtin.systemd:
+    name: chrony
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+# ---------- knockd ----------
+
+- name: restart knockd
+  ansible.builtin.systemd:
+    name: knockd
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+# ---------- WireGuard ----------
+
+- name: restart wireguard
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ bastion_wireguard_interface }}"
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+
+# ---------- OpenVPN ----------
+
+- name: restart openvpn
+  ansible.builtin.systemd:
+    name: openvpn@server
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+# ---------- nginx ----------
+
+- name: reload nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+  become: true
+  when: not ansible_check_mode
+
+- name: restart nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: restarted
+  become: true
+  when: not ansible_check_mode
+
+# ---------- iptables restore ----------
+- name: restore iptables rules
+  ansible.builtin.shell: iptables-restore < /etc/iptables/rules.v4
+  become: true
+  when: not ansible_check_mode

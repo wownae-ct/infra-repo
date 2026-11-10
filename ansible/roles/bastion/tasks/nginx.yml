@@ -1,0 +1,264 @@
+---
+# ============================================================
+# bastion role - nginx sub-task
+# ============================================================
+# - nginx 패키지
+# - /etc/nginx/nginx.conf  (template)
+# - /etc/nginx/ssl/*       (selfsigned cert + key, key는 vault)
+# - sites-enabled/default 제거
+# - 외부 노출 (80/443 from eth1) - bastion_nginx_external_enabled toggle
+# - internal vhost 7개 (template loop)
+# - external vhost (example.ddns.net 등) - bastion_nginx_external_vhost_enabled toggle
+#   (certbot 인증서 필요. cutover 전엔 false)
+# ============================================================
+
+# ---------- 패키지 ----------
+
+- name: Install nginx
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - nginx-extras
+    state: present
+  become: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  tags: [bastion, nginx, packages]
+
+
+# ---------- 메인 설정 ----------
+
+- name: Render /etc/nginx/nginx.conf
+  ansible.builtin.template:
+    src: nginx/nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+    validate: "nginx -t -c %s"
+  become: true
+  notify: reload nginx
+  tags: [bastion, nginx, config]
+
+- name: Remove sites-enabled/default (Ubuntu 기본 80 listen 차단)
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  become: true
+  notify: reload nginx
+  tags: [bastion, nginx, config]
+
+
+# ---------- SSL 인증서 (selfsigned) ----------
+
+- name: Ensure /etc/nginx/ssl directory exists
+  ansible.builtin.file:
+    path: /etc/nginx/ssl
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  tags: [bastion, nginx, ssl]
+
+- name: Deploy nginx SSL certificates (selfsigned)
+  ansible.builtin.copy:
+    src: "nginx/ssl/{{ item.name }}"
+    dest: "/etc/nginx/ssl/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - { name: "selfsigned.crt",    mode: "0644" }
+    - { name: "selfsigned.key",    mode: "0600" }
+    - { name: "s3-selfsigned.crt", mode: "0644" }
+    - { name: "s3-selfsigned.key", mode: "0600" }
+  notify: reload nginx
+  tags: [bastion, nginx, ssl]
+
+
+# ---------- vhost (internal 7개) ----------
+# validate 없음 - vhost 단독 검증 불가 (nginx -t 는 전체 설정 검증).
+# 잘못된 vhost 박히면 verify 의 nginx -t 에서 fail (reload 안 됨 → 옛 설정 유지).
+
+- name: Render internal vhost configs (loop)
+  ansible.builtin.template:
+    src: nginx/internal-vhost.conf.j2
+    dest: "/etc/nginx/conf.d/internal-{{ item }}.conf"
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  loop: "{{ bastion_nginx_internal_vhosts }}"
+  loop_control:
+    loop_var: item
+  vars:
+    vhost_name: "{{ item }}"
+  notify: reload nginx
+  tags: [bastion, nginx, vhost]
+
+
+# ---------- vhost (external) ----------
+# certbot 인증서 의존. toggle 로 통제 (cutover 전엔 false).
+# - true:  external-svc.conf 박음 (443 listen 시작)
+# - false: 제거 (idempotent 보장)
+
+- name: Deploy external-svc.conf (toggle on)
+  ansible.builtin.copy:
+    src: nginx/conf.d/external-svc.conf
+    dest: /etc/nginx/conf.d/external-svc.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  become: true
+  when: bastion_nginx_external_vhost_enabled | bool
+  notify: reload nginx
+  tags: [bastion, nginx, vhost]
+
+- name: Remove external-svc.conf (toggle off)
+  ansible.builtin.file:
+    path: /etc/nginx/conf.d/external-svc.conf
+    state: absent
+  become: true
+  when: not (bastion_nginx_external_vhost_enabled | bool)
+  notify: reload nginx
+  tags: [bastion, nginx, vhost]
+
+
+# ---------- iptables INPUT (80, 443 from eth1) ----------
+# toggle 통제. DDNS cutover 전엔 false (룰 박지 않음).
+
+- name: Ensure INPUT ACCEPT for HTTP from external interface
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: "{{ bastion_iptables_external_iface }}"
+    protocol: tcp
+    destination_port: "80"
+    jump: ACCEPT
+    state: "{{ 'present' if bastion_nginx_external_enabled | bool else 'absent' }}"
+    comment: "bastion: nginx HTTP"
+  become: true
+  notify: save iptables rules
+  tags: [bastion, nginx, iptables]
+
+- name: Ensure INPUT ACCEPT for HTTPS from external interface
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: "{{ bastion_iptables_external_iface }}"
+    protocol: tcp
+    destination_port: "443"
+    jump: ACCEPT
+    state: "{{ 'present' if bastion_nginx_external_enabled | bool else 'absent' }}"
+    comment: "bastion: nginx HTTPS"
+  become: true
+  notify: save iptables rules
+  tags: [bastion, nginx, iptables]
+
+
+# ---------- 서비스 ----------
+
+- name: Ensure nginx enabled and running
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+  become: true
+  when: not ansible_check_mode
+  tags: [bastion, nginx, service]
+
+- name: Flush handlers (nginx 재시작 즉시 적용)
+  ansible.builtin.meta: flush_handlers
+  tags: [bastion, nginx]
+
+
+# ---------- 검증 ----------
+
+- name: Verify - nginx service running
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+  become: true
+  register: nginx_running
+  changed_when: false
+  failed_when: nginx_running.status.ActiveState != "active"
+  when: not ansible_check_mode
+  tags: [bastion, nginx, verify]
+
+- name: Verify - nginx config syntax
+  ansible.builtin.command: nginx -t
+  become: true
+  register: nginx_syntax
+  changed_when: false
+  failed_when: nginx_syntax.rc != 0
+  when: not ansible_check_mode
+  tags: [bastion, nginx, verify]
+
+- name: Verify - nginx process running
+  ansible.builtin.shell: |
+    pgrep -x nginx || exit 1
+  args:
+    executable: /bin/bash
+  become: true
+  register: nginx_proc
+  changed_when: false
+  failed_when: nginx_proc.rc != 0
+  when: not ansible_check_mode
+  tags: [bastion, nginx, verify]
+
+- name: Verify - nginx listening on port 80
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":80\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: nginx_listen_80
+  changed_when: false
+  failed_when: nginx_listen_80.rc != 0
+  when: not ansible_check_mode
+  tags: [bastion, nginx, verify]
+
+- name: Verify - internal vhost configs (7개 파일 존재)
+  ansible.builtin.stat:
+    path: "/etc/nginx/conf.d/internal-{{ item }}.conf"
+  become: true
+  loop: "{{ bastion_nginx_internal_vhosts }}"
+  loop_control:
+    loop_var: item
+  register: vhost_stat
+  failed_when: not vhost_stat.stat.exists
+  when: not ansible_check_mode
+  tags: [bastion, nginx, verify]
+
+- name: Verify - internal vhost responds (jenkins.lab.internal)
+  ansible.builtin.shell: |
+    curl -s -o /dev/null -w '%{http_code}' \
+      -H 'Host: jenkins.{{ bastion_bind9_internal_domain }}' \
+      http://127.0.0.1/
+  args:
+    executable: /bin/bash
+  become: true
+  register: curl_test
+  changed_when: false
+  # 444 (allow 거부 정상) / 502 (백엔드 없음) / 200/3xx (백엔드 있음) 다 OK.
+  # 핵심: nginx 가 응답 (timeout 안 남) = vhost 인식
+  failed_when: false
+  when: not ansible_check_mode
+  tags: [bastion, nginx, verify]
+
+- name: Verify - nginx listening on port 443 (external vhost on)
+  ansible.builtin.shell: |
+    ss -tlnp | grep -E ":443\s"
+  args:
+    executable: /bin/bash
+  become: true
+  register: nginx_listen_443
+  changed_when: false
+  failed_when: nginx_listen_443.rc != 0
+  when:
+    - not ansible_check_mode
+    - bastion_nginx_external_vhost_enabled | bool
+  tags: [bastion, nginx, verify]

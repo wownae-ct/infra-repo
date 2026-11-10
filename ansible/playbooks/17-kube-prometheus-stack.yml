@@ -1,0 +1,36 @@
+---
+# ============================================================
+# kube-prometheus-stack 부트스트랩
+# ============================================================
+# 대상: k8s-master-01 (helm + verify)
+#
+# 사전 조건:
+#   - sealed-secrets / metallb / longhorn / istio / coredns / argocd 완료
+#   - vault 변수: vault_aws_access_key, vault_aws_secret_key 등록
+#   - master etcd 의 listen-metrics-urls 이 0.0.0.0:2381 인 상태
+#     (3차 bootstrap 의 kubeadm-config.yaml.j2 의 etcd.extraArgs 가 책임)
+#
+# Sub-task 순서:
+#   1. helm    — chart install (operator + prometheus + alertmanager + grafana
+#                + node-exporter + kube-state-metrics)
+#   2. verify  — 종합 검증
+# ============================================================
+
+- name: "kube-prometheus-stack | helm install + verify"
+  hosts: k8s-master-01
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: "1) helm (chart install + CRD wait)"
+      ansible.builtin.include_role:
+        name: kube-prometheus-stack
+      vars:
+        kps_sub_task: helm
+
+    - name: "2) verify"
+      ansible.builtin.include_role:
+        name: kube-prometheus-stack
+      vars:
+        kps_sub_task: verify

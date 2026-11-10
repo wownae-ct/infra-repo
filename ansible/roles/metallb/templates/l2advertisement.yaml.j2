@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# L2Advertisement — ARP/NDP 응답으로 pool IP 를 L2 네트워크에 광고.
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: {{ metallb_l2adv_name }}
+  namespace: {{ metallb_namespace }}
+spec:
+  ipAddressPools:
+    - {{ metallb_pool_name }}
